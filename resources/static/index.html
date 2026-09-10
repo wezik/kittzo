@@ -43,12 +43,11 @@
     <form id="schedule-form">
       <input name="amount" placeholder="19.99" required />
       <input name="currency" placeholder="USD" value="USD" required />
-      <input name="interval_months" type="number" min="1" placeholder="months" value="1" required />
       <input name="day_of_month" type="number" min="1" max="31" placeholder="day" required />
       <button type="submit">Create</button>
     </form>
     <table>
-      <thead><tr><th>Amount</th><th>Recurrence</th><th>Status</th><th>Last run</th></tr></thead>
+      <thead><tr><th>Amount</th><th>Recurrence</th><th>Status</th><th>Next due</th></tr></thead>
       <tbody id="schedules-body"></tbody>
     </table>
   </section>

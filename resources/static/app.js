@@ -42,8 +42,8 @@ async function loadSchedules() {
   document.getElementById("schedules-body").innerHTML = schedules
     .map((s) => {
       const r = s.recurrence;
-      const recurrence = `every ${r.interval_months}mo on day ${r.day_of_month}`;
-      return `<tr><td>${s.total.amount} ${s.total.currency}</td><td>${recurrence}</td><td>${s.status}</td><td>${s.last_run_at ?? "—"}</td></tr>`;
+      const recurrence = `monthly on day ${r.day_of_month}`;
+      return `<tr><td>${s.total.amount} ${s.total.currency}</td><td>${recurrence}</td><td>${s.status}</td><td>${s.next_due_at}</td></tr>`;
     })
     .join("");
 }
@@ -72,8 +72,7 @@ document.getElementById("schedule-form").addEventListener("submit", async (e) =>
     body: JSON.stringify({
       total: { amount: form.get("amount"), currency: form.get("currency") },
       recurrence: {
-        type: "every_n_months",
-        interval_months: Number(form.get("interval_months")),
+        type: "monthly",
         day_of_month: Number(form.get("day_of_month")),
       },
     }),

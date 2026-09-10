@@ -58,7 +58,7 @@ async fn serve(config: Config) {
 
     let tasks: Vec<Arc<dyn StartupTask>> = vec![Arc::new(PaymentScheduleJob::new(
         schedule_service.clone(),
-        Arc::new(LoggingNotifier),
+        payment_service.clone(),
         config.payment_schedule(),
     ))];
     for task in tasks {

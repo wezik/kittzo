@@ -1,91 +1,112 @@
 use std::sync::Arc;
+use std::time::Duration;
 
 use async_trait::async_trait;
-use time::OffsetDateTime;
+use time::{OffsetDateTime, SignedDuration};
 
-use crate::domain::confirmation::{Confirmation, ConfirmationSubject, Notifier};
-use crate::domain::payment::{Payment, PaymentSource};
+use crate::domain::payment::{PaymentService, PaymentSource};
+use crate::domain::payment_schedule::PaymentScheduleStatus;
 use crate::domain::startup_task::StartupTask;
 
-use super::{PaymentScheduleConfig, PaymentScheduleService};
+use super::PaymentScheduleService;
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct PaymentScheduleJobConfig {
+    pub poll_interval_secs: u64,
+    pub retry_after_secs: u64,
+}
+
+impl Default for PaymentScheduleJobConfig {
+    fn default() -> Self {
+        Self {
+            poll_interval_secs: 1800,
+            retry_after_secs: 1200,
+        }
+    }
+}
+
+impl PaymentScheduleJobConfig {
+    pub fn poll_interval(&self) -> Duration {
+        Duration::from_secs(self.poll_interval_secs)
+    }
+
+    pub fn retry_after(&self) -> SignedDuration {
+        SignedDuration::seconds(self.retry_after_secs as i64)
+    }
+}
 
 pub struct PaymentScheduleJob {
     schedule_service: Arc<PaymentScheduleService>,
-    notifier: Arc<dyn Notifier>,
-    config: PaymentScheduleConfig,
+    payment_service: Arc<PaymentService>,
+    config: PaymentScheduleJobConfig,
 }
 
 impl PaymentScheduleJob {
     pub fn new(
         schedule_service: Arc<PaymentScheduleService>,
-        notifier: Arc<dyn Notifier>,
-        config: PaymentScheduleConfig,
+        payment_service: Arc<PaymentService>,
+        config: PaymentScheduleJobConfig,
     ) -> Self {
         Self {
             schedule_service,
-            notifier,
+            payment_service,
             config,
         }
     }
 
-    async fn process_due_occurrences(&self) {
-        let now = OffsetDateTime::now_utc();
-        for mut schedule in self
+    async fn process(&self) {
+        let due_schedules = self
             .schedule_service
             .claim_due(self.config.retry_after())
-            .await
-        {
-            let due_payments: Vec<(Payment, Confirmation)> = schedule
-                .pending_occurrences(now)
-                .into_iter()
-                .map(|occurrence_date| {
-                    let payment = Payment::new(
-                        schedule.total.clone(),
-                        PaymentSource::Schedule {
-                            schedule_id: schedule.id,
-                            occurrence_date,
-                        },
-                    );
-                    let confirmation = Confirmation::new(ConfirmationSubject::Payment(payment.id));
-                    (payment, confirmation)
-                })
-                .collect();
+            .await;
 
-            if due_payments.is_empty() {
-                // Nothing due this poll: just release the claim so the next poll can
-                // reclaim it. `last_run_at` stays untouched, it only needs to advance
-                // when a payment actually fires.
-                schedule.release_claim();
-                self.schedule_service.update(schedule).await;
-                continue;
-            }
 
-            // Release the claim and record how far we've caught up, so the next poll
-            // (however far in the future) only backfills what's genuinely new. Persisted
-            // atomically with the payments themselves: a crash between the two would
-            // otherwise let a retry recreate the same occurrence as a duplicate payment.
-            schedule.finalize_processing();
-            let (_, created) = self
-                .schedule_service
-                .finalize_with_payments(schedule, due_payments)
-                .await;
-
-            for (_, confirmation) in &created {
-                self.notifier.request(confirmation).await;
-            }
+        if due_schedules.is_empty() {
+            return;
         }
+
+        tracing::info!("processing payment schedules");
+
+        let now = OffsetDateTime::now_utc();
+        let now_date = now.date();
+
+        for mut schedule in due_schedules {
+            // produce every occurrence due up to today (usually one, but catches up if the
+            // daemon was down for a while), advancing next_due_at past each as it's produced.
+            let mut sources = Vec::new();
+            while schedule.next_due_at <= now_date {
+                sources.push(PaymentSource::Schedule {
+                    schedule_id: schedule.id,
+                    occurrence_date: schedule.next_due_at,
+                });
+                schedule.advance_due_date();
+            }
+
+            let entries = sources
+                .into_iter()
+                .map(|source| (schedule.total.clone(), source))
+                .collect();
+            self.payment_service.create_all(entries).await;
+
+            schedule.updated_at = OffsetDateTime::now_utc();
+            schedule.status = PaymentScheduleStatus::Idle;
+            self.schedule_service.update(schedule).await;
+        }
+
+        let elapsed = OffsetDateTime::now_utc() - now;
+        tracing::info!(elapsed_ms = elapsed.whole_milliseconds(), "finished processing payment schedules");
     }
 }
 
 #[async_trait]
 impl StartupTask for PaymentScheduleJob {
     fn name(&self) -> &str {
-        "payment-schedules"
+        "payment-schedules-processing-job"
     }
 
     async fn run(&self) {
         loop {
-            self.process_due_occurrences().await;
+            self.process().await;
             tokio::time::sleep(self.config.poll_interval()).await;
         }
     }
@@ -95,10 +116,8 @@ impl StartupTask for PaymentScheduleJob {
 mod tests {
     use super::*;
     use crate::domain::money::Money;
-    use crate::domain::payment::{PaymentService, PaymentSource};
-    use crate::domain::payment_schedule::{
-        PaymentSchedule, PaymentScheduleRepository, PaymentScheduleStatus, Recurrence,
-    };
+    use crate::domain::payment::PaymentSource;
+    use crate::domain::payment_schedule::{PaymentSchedule, PaymentScheduleStatus, Recurrence};
     use crate::infra::notifier::LoggingNotifier;
     use crate::infra::persistence::connect;
     use crate::infra::persistence::sqlx_payment_repository::SqlitePaymentRepository;
@@ -120,34 +139,35 @@ mod tests {
         )));
         let job = PaymentScheduleJob::new(
             schedule_service.clone(),
-            Arc::new(LoggingNotifier),
-            PaymentScheduleConfig::default(),
+            payment_service.clone(),
+            PaymentScheduleJobConfig::default(),
         );
         (job, payment_service, schedule_service)
     }
 
-    // Created "now" with day_of_month pinned to today: the only due occurrence is
-    // today itself, so exactly one payment is expected regardless of what day the
-    // test happens to run on (unlike a fixed backdate, which can straddle a
-    // variable number of monthly occurrences depending on the calendar).
-    fn due_schedule() -> PaymentSchedule {
-        let today = OffsetDateTime::now_utc();
-        PaymentSchedule::new(
-            Money::from_minor(1099, iso::USD),
-            Recurrence::EveryNMonths {
-                interval_months: 1,
-                day_of_month: today.day(),
-            },
-        )
+    // A freshly created schedule is never immediately due (`next_due_at` lands later this
+    // month or next), so a "due" fixture has to backdate it directly through the service.
+    async fn due_schedule(schedule_service: &PaymentScheduleService) -> PaymentSchedule {
+        let created = schedule_service
+            .create(
+                Money::from_minor(1099, iso::USD),
+                Recurrence::Monthly { day_of_month: 1 },
+            )
+            .await;
+        schedule_service
+            .update(PaymentSchedule {
+                next_due_at: OffsetDateTime::now_utc().date(),
+                ..created
+            })
+            .await
     }
 
     #[tokio::test]
     async fn processes_a_due_schedule_and_creates_a_scheduled_payment() {
         let (job, payment_service, schedule_service) = job().await;
-        let seed = due_schedule();
-        let schedule = schedule_service.create(seed.total, seed.recurrence).await;
+        let schedule = due_schedule(&schedule_service).await;
 
-        job.process_due_occurrences().await;
+        job.process().await;
 
         let payments = payment_service.find_all().await;
         assert_eq!(payments.len(), 1);
@@ -160,53 +180,30 @@ mod tests {
     #[tokio::test]
     async fn second_run_creates_no_duplicate_payment_when_nothing_new_is_due() {
         let (job, payment_service, schedule_service) = job().await;
-        let seed = due_schedule();
-        schedule_service.create(seed.total, seed.recurrence).await;
+        due_schedule(&schedule_service).await;
 
-        job.process_due_occurrences().await;
-        job.process_due_occurrences().await;
+        job.process().await;
+        job.process().await;
 
         assert_eq!(payment_service.find_all().await.len(), 1);
     }
 
     #[tokio::test]
-    async fn schedule_not_yet_due_creates_no_payment_and_leaves_last_run_at_untouched() {
-        let pool = connect("sqlite::memory:").await.unwrap();
-        let payment_service = Arc::new(PaymentService::new(
-            Arc::new(SqlitePaymentRepository::new(pool.clone())),
-            Arc::new(LoggingNotifier),
-        ));
-        let schedule_repo = Arc::new(SqlitePaymentScheduleRepository::new(pool));
-        let schedule_service = Arc::new(PaymentScheduleService::new(schedule_repo.clone()));
-        let job = PaymentScheduleJob::new(
-            schedule_service.clone(),
-            Arc::new(LoggingNotifier),
-            PaymentScheduleConfig::default(),
-        );
+    async fn schedule_not_yet_due_creates_no_payment_and_leaves_it_untouched() {
+        let (job, payment_service, schedule_service) = job().await;
+        let schedule = schedule_service
+            .create(
+                Money::from_minor(1099, iso::USD),
+                Recurrence::Monthly { day_of_month: 1 },
+            )
+            .await;
 
-        // Backdated into the future relative to real "now" so `due_occurrences` has
-        // nothing to report regardless of which day of the month this test runs on.
-        let mut seed = PaymentSchedule::new(
-            Money::from_minor(1099, iso::USD),
-            Recurrence::EveryNMonths {
-                interval_months: 1,
-                day_of_month: 1,
-            },
-        );
-        seed.created_at += time::Duration::days(60);
-        seed.updated_at = seed.created_at;
-        seed.next_due_at = seed.recurrence.next_occurrence_after(seed.created_at, None);
-        let schedule = schedule_repo.create(seed).await;
-
-        job.process_due_occurrences().await;
+        job.process().await;
 
         assert_eq!(payment_service.find_all().await.len(), 0);
         let schedules = schedule_service.find_all().await;
         assert_eq!(schedules.len(), 1);
-        assert_eq!(schedules[0].last_run_at, None);
         assert_eq!(schedules[0].status, PaymentScheduleStatus::Idle);
-        // next_due_at keeps claim_due from touching this row at all, not just from
-        // recording a run on it: version is untouched, not merely un-advanced.
-        assert_eq!(schedules[0].version.as_u32(), schedule.version.as_u32());
+        assert_eq!(schedules[0].version, schedule.version);
     }
 }

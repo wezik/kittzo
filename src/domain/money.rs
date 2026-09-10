@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 
 /// Newtype over [`rusty_money::Money`] so it can carry our own `Serialize`/`Deserialize`
 /// and `sqlx::Type` without fighting rusty_money's own representation.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Copy)]
 #[serde(try_from = "MoneyRepr", into = "MoneyRepr")]
 pub struct Money(RustyMoney<'static, Currency>);
 

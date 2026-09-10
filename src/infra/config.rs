@@ -1,7 +1,7 @@
 use serde::Deserialize;
 use std::path::Path;
 
-use crate::domain::payment_schedule::PaymentScheduleConfig;
+use crate::domain::payment_schedule::PaymentScheduleJobConfig;
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
@@ -28,7 +28,7 @@ impl Config {
         Config::load_from(Path::new(DEFAULT_PATH))
     }
 
-    pub fn payment_schedule(&self) -> PaymentScheduleConfig {
+    pub fn payment_schedule(&self) -> PaymentScheduleJobConfig {
         self.payment_schedule.clone().into()
     }
 
@@ -72,9 +72,9 @@ impl Default for TomlPaymentScheduleConfig {
     }
 }
 
-impl From<TomlPaymentScheduleConfig> for PaymentScheduleConfig {
+impl From<TomlPaymentScheduleConfig> for PaymentScheduleJobConfig {
     fn from(toml: TomlPaymentScheduleConfig) -> Self {
-        PaymentScheduleConfig {
+        PaymentScheduleJobConfig {
             poll_interval_secs: toml.poll_interval_secs,
             retry_after_secs: toml.retry_after_secs,
         }

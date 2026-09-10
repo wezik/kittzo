@@ -59,14 +59,20 @@ impl PaymentService {
         Self { repo, notifier }
     }
 
-    /// Every new payment starts out gated behind a pending confirmation instead of
-    /// being immediately active.
     pub async fn create(&self, total: Money, source: PaymentSource) -> Payment {
         let payment = Payment::new(total, source);
         let confirmation = Confirmation::new(ConfirmationSubject::Payment(payment.id));
         let (created, confirmation) = self.repo.create(payment, confirmation).await;
         self.notifier.request(&confirmation).await;
-        tracing::info!(payment_id = %created.id, confirmation_id = %confirmation.id, "created payment pending confirmation");
+        tracing::info!(payment_id = %created.id, confirmation_id = %confirmation.id, "created payment with pending confirmation");
+        created
+    }
+
+    pub async fn create_all(&self, entries: Vec<(Money, PaymentSource)>) -> Vec<Payment> {
+        let mut created = vec![];
+        for (total, source) in entries {
+            created.push(self.create(total, source).await);
+        }
         created
     }
 

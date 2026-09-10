@@ -2,9 +2,7 @@ use std::sync::Arc;
 
 use time::SignedDuration;
 
-use crate::domain::confirmation::Confirmation;
 use crate::domain::money::Money;
-use crate::domain::payment::Payment;
 
 use super::{PaymentSchedule, PaymentScheduleRepository, Recurrence};
 
@@ -29,24 +27,12 @@ impl PaymentScheduleService {
     }
 
     pub async fn claim_due(&self, retry_after: SignedDuration) -> Vec<PaymentSchedule> {
-        let claimed = self.repo.claim_due(retry_after).await;
-        tracing::info!(count = claimed.len(), "claimed due payment schedules");
-        claimed
+        self.repo.claim_due(retry_after).await
     }
 
     pub async fn update(&self, schedule: PaymentSchedule) -> PaymentSchedule {
         let updated = self.repo.update(schedule).await;
         tracing::info!(schedule_id = %updated.id, "updated payment schedule");
         updated
-    }
-
-    pub async fn finalize_with_payments(
-        &self,
-        schedule: PaymentSchedule,
-        payments: Vec<(Payment, Confirmation)>,
-    ) -> (PaymentSchedule, Vec<(Payment, Confirmation)>) {
-        let (schedule, payments) = self.repo.finalize_with_payments(schedule, payments).await;
-        tracing::info!(schedule_id = %schedule.id, payments = payments.len(), "finalized payment schedule");
-        (schedule, payments)
     }
 }

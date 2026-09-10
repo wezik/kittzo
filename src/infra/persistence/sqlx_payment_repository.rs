@@ -64,8 +64,7 @@ impl PaymentRepository for SqlitePaymentRepository {
 }
 
 /// Inserts a payment row against any executor (pool or transaction), so a caller that needs
-/// the write inside a larger transaction (see `SqlitePaymentScheduleRepository::finalize_with_payments`)
-/// can share this instead of duplicating the insert.
+/// the write inside a larger transaction can share this instead of duplicating the insert.
 pub(crate) async fn insert_payment<'e, E>(executor: E, payment: &Payment)
 where
     E: sqlx::Executor<'e, Database = Sqlite>,

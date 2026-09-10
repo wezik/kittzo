@@ -25,22 +25,13 @@ struct CreateScheduleRequest {
 #[derive(Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum RecurrenceRequest {
-    EveryNMonths {
-        interval_months: u32,
-        day_of_month: u8,
-    },
+    Monthly { day_of_month: u8 },
 }
 
 impl From<RecurrenceRequest> for Recurrence {
     fn from(recurrence: RecurrenceRequest) -> Self {
         match recurrence {
-            RecurrenceRequest::EveryNMonths {
-                interval_months,
-                day_of_month,
-            } => Recurrence::EveryNMonths {
-                interval_months,
-                day_of_month,
-            },
+            RecurrenceRequest::Monthly { day_of_month } => Recurrence::Monthly { day_of_month },
         }
     }
 }
@@ -53,29 +44,20 @@ struct PaymentScheduleResponse {
     updated_at: OffsetDateTimeDto,
     total: Money,
     recurrence: RecurrenceResponse,
-    last_run_at: Option<OffsetDateTimeDto>,
+    next_due_at: String,
     status: PaymentScheduleStatusResponse,
 }
 
 #[derive(Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum RecurrenceResponse {
-    EveryNMonths {
-        interval_months: u32,
-        day_of_month: u8,
-    },
+    Monthly { day_of_month: u8 },
 }
 
 impl From<Recurrence> for RecurrenceResponse {
     fn from(recurrence: Recurrence) -> Self {
         match recurrence {
-            Recurrence::EveryNMonths {
-                interval_months,
-                day_of_month,
-            } => RecurrenceResponse::EveryNMonths {
-                interval_months,
-                day_of_month,
-            },
+            Recurrence::Monthly { day_of_month } => RecurrenceResponse::Monthly { day_of_month },
         }
     }
 }
@@ -105,7 +87,7 @@ impl From<PaymentSchedule> for PaymentScheduleResponse {
             updated_at: schedule.updated_at.into(),
             total: schedule.total,
             recurrence: schedule.recurrence.into(),
-            last_run_at: schedule.last_run_at.map(Into::into),
+            next_due_at: schedule.next_due_at.to_string(),
             status: schedule.status.into(),
         }
     }

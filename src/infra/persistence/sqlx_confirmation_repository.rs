@@ -86,9 +86,8 @@ impl ConfirmationRepository for SqliteConfirmationRepository {
 }
 
 /// Inserts a confirmation row against any executor (pool or transaction), so a caller that
-/// needs the write inside a larger transaction (see `SqlitePaymentRepository::create` and
-/// `SqlitePaymentScheduleRepository::finalize_with_payments`) can share this instead of
-/// duplicating the insert.
+/// needs the write inside a larger transaction (see `SqlitePaymentRepository::create`) can
+/// share this instead of duplicating the insert.
 pub(crate) async fn insert_confirmation<'e, E>(executor: E, confirmation: &Confirmation)
 where
     E: sqlx::Executor<'e, Database = Sqlite>,
