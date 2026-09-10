@@ -40,12 +40,5 @@ async fn serve(config: Config) {
     };
 
     let addr = format!("127.0.0.1:{}", config.server_port);
-    let listener = tokio::net::TcpListener::bind(&addr)
-        .await
-        .expect("failed to bind server address");
-    tracing::info!(%addr, "listening");
-
-    axum::serve(listener, api::router(state))
-        .await
-        .expect("server error");
+    api::serve(&addr, state).await.expect("server error");
 }
