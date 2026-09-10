@@ -4,6 +4,7 @@ use async_trait::async_trait;
 use time::{Date, OffsetDateTime};
 use uuid::Uuid;
 
+use super::confirmation::{Confirmation, ConfirmationSubject, Notifier};
 use super::money::Money;
 use super::version::Version;
 
@@ -39,24 +40,33 @@ impl Payment {
 
 #[async_trait]
 pub trait PaymentRepository: Send + Sync {
-    async fn create(&self, payment: Payment) -> Payment;
+    /// Creates the `Payment` together with the pending `Confirmation` that gates it, in one
+    /// atomic write. This is an infra implementation detail (a single `sqlx::Transaction`),
+    /// not something callers need to manage.
+    async fn create(&self, payment: Payment, confirmation: Confirmation)
+    -> (Payment, Confirmation);
     async fn find_by_id(&self, id: Uuid) -> Option<Payment>;
     async fn find_all(&self) -> Vec<Payment>;
 }
 
 pub struct PaymentService {
     repo: Arc<dyn PaymentRepository>,
+    notifier: Arc<dyn Notifier>,
 }
 
 impl PaymentService {
-    pub fn new(repo: Arc<dyn PaymentRepository>) -> Self {
-        Self { repo }
+    pub fn new(repo: Arc<dyn PaymentRepository>, notifier: Arc<dyn Notifier>) -> Self {
+        Self { repo, notifier }
     }
 
+    /// Every new payment starts out gated behind a pending confirmation instead of
+    /// being immediately active.
     pub async fn create(&self, total: Money, source: PaymentSource) -> Payment {
         let payment = Payment::new(total, source);
-        let created = self.repo.create(payment).await;
-        tracing::info!(payment_id = %created.id, "created payment");
+        let confirmation = Confirmation::new(ConfirmationSubject::Payment(payment.id));
+        let (created, confirmation) = self.repo.create(payment, confirmation).await;
+        self.notifier.request(&confirmation).await;
+        tracing::info!(payment_id = %created.id, confirmation_id = %confirmation.id, "created payment pending confirmation");
         created
     }
 
@@ -72,6 +82,7 @@ impl PaymentService {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::infra::notifier::LoggingNotifier;
     use crate::infra::persistence::connect;
     use crate::infra::persistence::sqlx_payment_repository::SqlitePaymentRepository;
     use rusty_money::iso;
@@ -87,7 +98,10 @@ mod tests {
 
     async fn service() -> PaymentService {
         let pool = connect("sqlite::memory:").await.unwrap();
-        PaymentService::new(Arc::new(SqlitePaymentRepository::new(pool)))
+        PaymentService::new(
+            Arc::new(SqlitePaymentRepository::new(pool)),
+            Arc::new(LoggingNotifier),
+        )
     }
 
     #[tokio::test]

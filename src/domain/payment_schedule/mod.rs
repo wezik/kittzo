@@ -111,11 +111,6 @@ impl PaymentSchedule {
         }
     }
 
-    pub fn start_processing(&mut self) {
-        self.updated_at = OffsetDateTime::now_utc();
-        self.status = PaymentScheduleStatus::Processing;
-    }
-
     pub fn finalize_processing(&mut self) {
         let now = OffsetDateTime::now_utc();
         self.updated_at = now;
@@ -150,8 +145,8 @@ pub struct PaymentScheduleConfig {
 impl Default for PaymentScheduleConfig {
     fn default() -> Self {
         Self {
-            poll_interval_secs: 3600,
-            retry_after_secs: 1800,
+            poll_interval_secs: 1800,
+            retry_after_secs: 1200,
         }
     }
 }

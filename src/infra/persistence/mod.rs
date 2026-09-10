@@ -6,6 +6,7 @@ use sqlx::{Sqlite, SqlitePool};
 
 use crate::domain::money::Money;
 
+pub mod sqlx_confirmation_repository;
 pub mod sqlx_payment_repository;
 pub mod sqlx_payment_schedule_repository;
 

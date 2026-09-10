@@ -6,12 +6,15 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
 use api::AppState;
+use domain::confirmation::{ConfirmationRepository, ConfirmationService};
 use domain::payment::{PaymentRepository, PaymentService};
 use domain::payment_schedule::{
     PaymentScheduleJob, PaymentScheduleRepository, PaymentScheduleService,
 };
 use domain::startup_task::StartupTask;
 use infra::Config;
+use infra::notifier::LoggingNotifier;
+use infra::persistence::sqlx_confirmation_repository::SqliteConfirmationRepository;
 use infra::persistence::sqlx_payment_repository::SqlitePaymentRepository;
 use infra::persistence::sqlx_payment_schedule_repository::SqlitePaymentScheduleRepository;
 
@@ -42,10 +45,16 @@ async fn serve(config: Config) {
     let payment_repo: Arc<dyn PaymentRepository> =
         Arc::new(SqlitePaymentRepository::new(pool.clone()));
     let schedule_repo: Arc<dyn PaymentScheduleRepository> =
-        Arc::new(SqlitePaymentScheduleRepository::new(pool));
+        Arc::new(SqlitePaymentScheduleRepository::new(pool.clone()));
+    let confirmation_repo: Arc<dyn ConfirmationRepository> =
+        Arc::new(SqliteConfirmationRepository::new(pool));
 
-    let payment_service = Arc::new(PaymentService::new(payment_repo));
+    let payment_service = Arc::new(PaymentService::new(payment_repo, Arc::new(LoggingNotifier)));
     let schedule_service = Arc::new(PaymentScheduleService::new(schedule_repo));
+    let confirmation_service = Arc::new(ConfirmationService::new(
+        confirmation_repo,
+        Arc::new(LoggingNotifier),
+    ));
 
     let tasks: Vec<Arc<dyn StartupTask>> = vec![Arc::new(PaymentScheduleJob::new(
         payment_service.clone(),
@@ -62,6 +71,7 @@ async fn serve(config: Config) {
     let state = AppState {
         payment_service,
         schedule_service,
+        confirmation_service,
     };
 
     let addr = format!("127.0.0.1:{}", config.server_port);

@@ -71,6 +71,7 @@ mod tests {
     use super::*;
     use crate::domain::money::Money;
     use crate::domain::payment_schedule::{PaymentSchedule, Recurrence};
+    use crate::infra::notifier::LoggingNotifier;
     use crate::infra::persistence::connect;
     use crate::infra::persistence::sqlx_payment_repository::SqlitePaymentRepository;
     use crate::infra::persistence::sqlx_payment_schedule_repository::SqlitePaymentScheduleRepository;
@@ -82,9 +83,10 @@ mod tests {
         Arc<PaymentScheduleService>,
     ) {
         let pool = connect("sqlite::memory:").await.unwrap();
-        let payment_service = Arc::new(PaymentService::new(Arc::new(
-            SqlitePaymentRepository::new(pool.clone()),
-        )));
+        let payment_service = Arc::new(PaymentService::new(
+            Arc::new(SqlitePaymentRepository::new(pool.clone())),
+            Arc::new(LoggingNotifier),
+        ));
         let schedule_service = Arc::new(PaymentScheduleService::new(Arc::new(
             SqlitePaymentScheduleRepository::new(pool),
         )));

@@ -1,9 +1,11 @@
+pub mod confirmation;
 pub mod money;
 pub mod payment;
 pub mod payment_schedule;
 pub mod startup_task;
 pub mod version;
 
+pub use confirmation::*;
 pub use money::*;
 pub use payment::*;
 pub use payment_schedule::*;
