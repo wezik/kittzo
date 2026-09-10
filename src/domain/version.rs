@@ -13,6 +13,14 @@ impl Version {
     pub fn next(self) -> Version {
         Version(self.0 + 1)
     }
+
+    pub fn as_u32(self) -> u32 {
+        self.0
+    }
+
+    pub fn from_u32(value: u32) -> Version {
+        Version(value)
+    }
 }
 
 #[cfg(test)]

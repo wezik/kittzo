@@ -6,6 +6,8 @@ use sqlx::{Sqlite, SqlitePool};
 
 use crate::domain::money::Money;
 
+pub mod sqlx_payment_repository;
+
 // one connection avoids `SQLITE_BUSY` contention between writers.
 pub async fn connect(url: &str) -> sqlx::Result<SqlitePool> {
     let options = SqliteConnectOptions::from_str(url)?
@@ -13,10 +15,14 @@ pub async fn connect(url: &str) -> sqlx::Result<SqlitePool> {
         .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
         .busy_timeout(Duration::from_secs(5));
 
-    SqlitePoolOptions::new()
+    let pool = SqlitePoolOptions::new()
         .max_connections(1)
         .connect_with(options)
-        .await
+        .await?;
+
+    sqlx::migrate!("resources/migrations").run(&pool).await?;
+
+    Ok(pool)
 }
 
 impl sqlx::Type<Sqlite> for Money {
