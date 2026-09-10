@@ -119,7 +119,10 @@ async fn create(
         .schedule_service
         .create(body.total, body.recurrence.into())
         .await;
-    (StatusCode::CREATED, Json(PaymentScheduleResponse::from(created)))
+    (
+        StatusCode::CREATED,
+        Json(PaymentScheduleResponse::from(created)),
+    )
 }
 
 async fn list(State(state): State<AppState>) -> impl IntoResponse {

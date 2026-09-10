@@ -24,7 +24,6 @@ impl Default for Config {
 const DEFAULT_PATH: &str = "kittzo.toml";
 
 impl Config {
-
     pub fn load() -> Config {
         Config::load_from(Path::new(DEFAULT_PATH))
     }
@@ -40,7 +39,10 @@ impl Config {
                 Config::parse(&contents)
             }
             Err(_) => {
-                tracing::info!(path = DEFAULT_PATH, "no config found at the path using defaults");
+                tracing::info!(
+                    path = DEFAULT_PATH,
+                    "no config found at the path using defaults"
+                );
                 Config::default()
             }
         }
@@ -106,9 +108,8 @@ mod tests {
 
     #[test]
     fn payment_schedule_section_parses_when_present() {
-        let cfg = Config::parse(
-            "[payment_schedule]\npoll_interval_secs = 60\nretry_after_secs = 30\n",
-        );
+        let cfg =
+            Config::parse("[payment_schedule]\npoll_interval_secs = 60\nretry_after_secs = 30\n");
         assert_eq!(cfg.payment_schedule().poll_interval_secs, 60);
         assert_eq!(cfg.payment_schedule().retry_after_secs, 30);
     }

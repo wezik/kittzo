@@ -7,7 +7,9 @@ use std::sync::atomic::AtomicBool;
 
 use api::AppState;
 use domain::payment::{PaymentRepository, PaymentService};
-use domain::payment_schedule::{PaymentScheduleJob, PaymentScheduleRepository, PaymentScheduleService};
+use domain::payment_schedule::{
+    PaymentScheduleJob, PaymentScheduleRepository, PaymentScheduleService,
+};
 use domain::startup_task::StartupTask;
 use infra::Config;
 use infra::persistence::sqlx_payment_repository::SqlitePaymentRepository;

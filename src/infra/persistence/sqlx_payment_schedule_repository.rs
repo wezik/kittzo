@@ -69,7 +69,10 @@ impl PaymentScheduleRepository for SqlitePaymentScheduleRepository {
         .expect("failed to update payment schedule");
 
         if result.rows_affected() == 0 {
-            panic!("payment schedule {} updated concurrently or missing", schedule.id);
+            panic!(
+                "payment schedule {} updated concurrently or missing",
+                schedule.id
+            );
         }
 
         PaymentSchedule {

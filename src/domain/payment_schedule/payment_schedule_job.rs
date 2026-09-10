@@ -76,11 +76,15 @@ mod tests {
     use crate::infra::persistence::sqlx_payment_schedule_repository::SqlitePaymentScheduleRepository;
     use rusty_money::iso;
 
-    async fn job() -> (PaymentScheduleJob, Arc<PaymentService>, Arc<PaymentScheduleService>) {
+    async fn job() -> (
+        PaymentScheduleJob,
+        Arc<PaymentService>,
+        Arc<PaymentScheduleService>,
+    ) {
         let pool = connect("sqlite::memory:").await.unwrap();
-        let payment_service = Arc::new(PaymentService::new(Arc::new(SqlitePaymentRepository::new(
-            pool.clone(),
-        ))));
+        let payment_service = Arc::new(PaymentService::new(Arc::new(
+            SqlitePaymentRepository::new(pool.clone()),
+        )));
         let schedule_service = Arc::new(PaymentScheduleService::new(Arc::new(
             SqlitePaymentScheduleRepository::new(pool),
         )));
