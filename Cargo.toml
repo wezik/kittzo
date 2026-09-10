@@ -11,6 +11,7 @@ serde = { version = "1", features = ["derive"] }
 toml = "0.9"
 rusty-money = { version = "0.5.0", features = ["serde"] }
 rust_decimal = "1.43"
+sqlx = { version = "0.8", features = ["sqlite", "runtime-tokio"] }
 
 [dev-dependencies]
 serde_json = "1"

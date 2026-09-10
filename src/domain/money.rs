@@ -31,15 +31,40 @@ impl Money {
     }
 }
 
+impl Money {
+    fn from_parts(currency_code: &str, amount: &str) -> Result<Self, String> {
+        let currency = rusty_money::iso::find(currency_code)
+            .ok_or_else(|| format!("unknown currency code: {currency_code}"))?;
+        RustyMoney::from_str(amount, currency)
+            .map(Money)
+            .map_err(|e| e.to_string())
+    }
+}
+
 impl TryFrom<MoneyRepr> for Money {
     type Error = String;
 
     fn try_from(repr: MoneyRepr) -> Result<Self, Self::Error> {
-        let currency = rusty_money::iso::find(&repr.currency)
-            .ok_or_else(|| format!("unknown currency code: {}", repr.currency))?;
-        RustyMoney::from_str(&repr.amount, currency)
-            .map(Money)
-            .map_err(|e| e.to_string())
+        Money::from_parts(&repr.currency, &repr.amount)
+    }
+}
+
+/// `"<ISO code> <amount>"`, e.g. `"USD 10.99"` — the wire format infra's `sqlx::Type` impl
+/// stores as a single TEXT column.
+impl std::fmt::Display for Money {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} {}", self.currency().iso_alpha_code, self.0.amount())
+    }
+}
+
+impl std::str::FromStr for Money {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let (code, amount) = s
+            .split_once(' ')
+            .ok_or_else(|| format!("invalid money string: {s}"))?;
+        Money::from_parts(code, amount)
     }
 }
 
