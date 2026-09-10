@@ -18,6 +18,14 @@
   <h1>kittzo</h1>
 
   <section>
+    <h2>Pending confirmations</h2>
+    <table>
+      <thead><tr><th>Subject</th><th>Requested</th><th></th></tr></thead>
+      <tbody id="confirmations-body"></tbody>
+    </table>
+  </section>
+
+  <section>
     <h2>Ingest payment</h2>
     <form id="payment-form">
       <input name="amount" placeholder="19.99" required />
@@ -25,7 +33,7 @@
       <button type="submit">Ingest</button>
     </form>
     <table>
-      <thead><tr><th>Amount</th><th>Source</th><th>Created</th></tr></thead>
+      <thead><tr><th>Amount</th><th>Source</th><th>State</th><th>Created</th></tr></thead>
       <tbody id="payments-body"></tbody>
     </table>
   </section>

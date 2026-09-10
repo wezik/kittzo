@@ -6,6 +6,7 @@ use axum::routing::{get, post};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::domain::confirmation::ConfirmationState;
 use crate::domain::money::Money;
 use crate::domain::payment::{Payment, PaymentSource};
 
@@ -31,6 +32,7 @@ struct PaymentResponse {
     total: Money,
     created_at: OffsetDateTimeDto,
     source: PaymentSourceResponse,
+    confirmation_state: &'static str,
 }
 
 #[derive(Serialize)]
@@ -43,15 +45,25 @@ enum PaymentSourceResponse {
     },
 }
 
-impl From<Payment> for PaymentResponse {
-    fn from(payment: Payment) -> Self {
-        PaymentResponse {
-            id: payment.id,
-            version: payment.version.as_u32(),
-            total: payment.total,
-            created_at: payment.created_at.into(),
-            source: payment.source.into(),
-        }
+async fn to_response(state: &AppState, payment: Payment) -> PaymentResponse {
+    let confirmation_state = state
+        .confirmation_service
+        .find_by_payment_id(payment.id)
+        .await
+        .map(|c| match c.state {
+            ConfirmationState::Pending => "pending",
+            ConfirmationState::Approved => "approved",
+            ConfirmationState::Rejected => "rejected",
+        })
+        .unwrap_or("unknown");
+
+    PaymentResponse {
+        id: payment.id,
+        version: payment.version.as_u32(),
+        total: payment.total,
+        created_at: payment.created_at.into(),
+        source: payment.source.into(),
+        confirmation_state,
     }
 }
 
@@ -78,23 +90,21 @@ async fn ingest(
         .payment_service
         .create(body.total, PaymentSource::Manual)
         .await;
-    (StatusCode::CREATED, Json(PaymentResponse::from(payment)))
+    let response = to_response(&state, payment).await;
+    (StatusCode::CREATED, Json(response))
 }
 
 async fn list(State(state): State<AppState>) -> impl IntoResponse {
-    let payments: Vec<PaymentResponse> = state
-        .payment_service
-        .find_all()
-        .await
-        .into_iter()
-        .map(PaymentResponse::from)
-        .collect();
+    let mut payments = Vec::new();
+    for payment in state.payment_service.find_all().await {
+        payments.push(to_response(&state, payment).await);
+    }
     Json(payments)
 }
 
 async fn find_by_id(State(state): State<AppState>, Path(id): Path<Uuid>) -> impl IntoResponse {
     match state.payment_service.find_by_id(id).await {
-        Some(payment) => Json(PaymentResponse::from(payment)).into_response(),
+        Some(payment) => Json(to_response(&state, payment).await).into_response(),
         None => StatusCode::NOT_FOUND.into_response(),
     }
 }

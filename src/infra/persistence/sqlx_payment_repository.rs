@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use sqlx::{Row, SqlitePool, sqlite::SqliteRow};
+use sqlx::{Row, Sqlite, SqlitePool, sqlite::SqliteRow};
 use time::{Date, OffsetDateTime};
 use uuid::Uuid;
 
@@ -8,7 +8,7 @@ use crate::domain::money::Money;
 use crate::domain::payment::{Payment, PaymentRepository, PaymentSource};
 use crate::domain::version::Version;
 
-use super::sqlx_confirmation_repository::{state_str, subject_parts};
+use super::sqlx_confirmation_repository::insert_confirmation;
 
 pub struct SqlitePaymentRepository {
     pool: SqlitePool,
@@ -33,39 +33,8 @@ impl PaymentRepository for SqlitePaymentRepository {
             .await
             .expect("failed to begin payment creation transaction");
 
-        let (schedule_id, occurrence_date) = schedule_source_parts(&payment.source);
-        sqlx::query(
-            "INSERT INTO payments (id, version, total, created_at, source_type, schedule_id, occurrence_date)
-             VALUES (?, ?, ?, ?, ?, ?, ?)",
-        )
-        .bind(payment.id.to_string())
-        .bind(payment.version.as_u32() as i64)
-        .bind(&payment.total)
-        .bind(payment.created_at)
-        .bind(source_type(&payment.source))
-        .bind(schedule_id)
-        .bind(occurrence_date)
-        .execute(&mut *tx)
-        .await
-        .expect("failed to insert payment");
-
-        let (subject_type, subject_id) = subject_parts(&confirmation.subject);
-        sqlx::query(
-            "INSERT INTO confirmations
-             (id, version, created_at, updated_at, subject_type, subject_id, state, decided_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-        )
-        .bind(confirmation.id.to_string())
-        .bind(confirmation.version.as_u32() as i64)
-        .bind(confirmation.created_at)
-        .bind(confirmation.updated_at)
-        .bind(subject_type)
-        .bind(subject_id)
-        .bind(state_str(confirmation.state))
-        .bind(confirmation.decided_at)
-        .execute(&mut *tx)
-        .await
-        .expect("failed to insert confirmation");
+        insert_payment(&mut *tx, &payment).await;
+        insert_confirmation(&mut *tx, &confirmation).await;
 
         tx.commit()
             .await
@@ -92,6 +61,30 @@ impl PaymentRepository for SqlitePaymentRepository {
             .map(row_to_payment)
             .collect()
     }
+}
+
+/// Inserts a payment row against any executor (pool or transaction), so a caller that needs
+/// the write inside a larger transaction (see `SqlitePaymentScheduleRepository::finalize_with_payments`)
+/// can share this instead of duplicating the insert.
+pub(crate) async fn insert_payment<'e, E>(executor: E, payment: &Payment)
+where
+    E: sqlx::Executor<'e, Database = Sqlite>,
+{
+    let (schedule_id, occurrence_date) = schedule_source_parts(&payment.source);
+    sqlx::query(
+        "INSERT INTO payments (id, version, total, created_at, source_type, schedule_id, occurrence_date)
+         VALUES (?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(payment.id.to_string())
+    .bind(payment.version.as_u32() as i64)
+    .bind(&payment.total)
+    .bind(payment.created_at)
+    .bind(source_type(&payment.source))
+    .bind(schedule_id)
+    .bind(occurrence_date)
+    .execute(executor)
+    .await
+    .expect("failed to insert payment");
 }
 
 pub(crate) fn source_type(source: &PaymentSource) -> &'static str {

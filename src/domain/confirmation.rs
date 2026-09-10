@@ -69,6 +69,7 @@ pub trait ConfirmationRepository: Send + Sync {
     async fn update(&self, confirmation: Confirmation) -> Confirmation;
     async fn find_by_id(&self, id: Uuid) -> Option<Confirmation>;
     async fn find_pending(&self) -> Vec<Confirmation>;
+    async fn find_by_payment_id(&self, payment_id: Uuid) -> Option<Confirmation>;
 }
 
 /// Human-in-the-loop notification port. `request` is fire-and-forget from the
@@ -119,6 +120,10 @@ impl ConfirmationService {
 
     pub async fn find_pending(&self) -> Vec<Confirmation> {
         self.repo.find_pending().await
+    }
+
+    pub async fn find_by_payment_id(&self, payment_id: Uuid) -> Option<Confirmation> {
+        self.repo.find_by_payment_id(payment_id).await
     }
 }
 
@@ -206,6 +211,15 @@ mod tests {
                 .filter(|c| c.state == ConfirmationState::Pending)
                 .cloned()
                 .collect()
+        }
+
+        async fn find_by_payment_id(&self, payment_id: Uuid) -> Option<Confirmation> {
+            self.confirmations
+                .lock()
+                .unwrap()
+                .iter()
+                .find(|c| c.subject == ConfirmationSubject::Payment(payment_id))
+                .cloned()
         }
     }
 

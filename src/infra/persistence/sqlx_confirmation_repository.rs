@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use sqlx::{Row, SqlitePool, sqlite::SqliteRow};
+use sqlx::{Row, Sqlite, SqlitePool, sqlite::SqliteRow};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
@@ -21,24 +21,7 @@ impl SqliteConfirmationRepository {
 #[async_trait]
 impl ConfirmationRepository for SqliteConfirmationRepository {
     async fn create(&self, confirmation: Confirmation) -> Confirmation {
-        let (subject_type, subject_id) = subject_parts(&confirmation.subject);
-        sqlx::query(
-            "INSERT INTO confirmations
-             (id, version, created_at, updated_at, subject_type, subject_id, state, decided_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-        )
-        .bind(confirmation.id.to_string())
-        .bind(confirmation.version.as_u32() as i64)
-        .bind(confirmation.created_at)
-        .bind(confirmation.updated_at)
-        .bind(subject_type)
-        .bind(subject_id)
-        .bind(state_str(confirmation.state))
-        .bind(confirmation.decided_at)
-        .execute(&self.pool)
-        .await
-        .expect("failed to insert confirmation");
-
+        insert_confirmation(&self.pool, &confirmation).await;
         confirmation
     }
 
@@ -91,6 +74,42 @@ impl ConfirmationRepository for SqliteConfirmationRepository {
             .map(row_to_confirmation)
             .collect()
     }
+
+    async fn find_by_payment_id(&self, payment_id: Uuid) -> Option<Confirmation> {
+        sqlx::query("SELECT * FROM confirmations WHERE subject_type = 'payment' AND subject_id = ?")
+            .bind(payment_id.to_string())
+            .fetch_optional(&self.pool)
+            .await
+            .expect("failed to query confirmation by payment id")
+            .map(|row| row_to_confirmation(&row))
+    }
+}
+
+/// Inserts a confirmation row against any executor (pool or transaction), so a caller that
+/// needs the write inside a larger transaction (see `SqlitePaymentRepository::create` and
+/// `SqlitePaymentScheduleRepository::finalize_with_payments`) can share this instead of
+/// duplicating the insert.
+pub(crate) async fn insert_confirmation<'e, E>(executor: E, confirmation: &Confirmation)
+where
+    E: sqlx::Executor<'e, Database = Sqlite>,
+{
+    let (subject_type, subject_id) = subject_parts(&confirmation.subject);
+    sqlx::query(
+        "INSERT INTO confirmations
+         (id, version, created_at, updated_at, subject_type, subject_id, state, decided_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(confirmation.id.to_string())
+    .bind(confirmation.version.as_u32() as i64)
+    .bind(confirmation.created_at)
+    .bind(confirmation.updated_at)
+    .bind(subject_type)
+    .bind(subject_id)
+    .bind(state_str(confirmation.state))
+    .bind(confirmation.decided_at)
+    .execute(executor)
+    .await
+    .expect("failed to insert confirmation");
 }
 
 pub(crate) fn subject_parts(subject: &ConfirmationSubject) -> (&'static str, String) {
@@ -183,6 +202,19 @@ mod tests {
         assert_eq!(updated.version, confirmation.version.next());
         assert_eq!(updated.state, ConfirmationState::Approved);
         assert!(updated.decided_at.is_some());
+    }
+
+    #[tokio::test]
+    async fn find_by_payment_id_returns_its_confirmation() {
+        let repo = repo().await;
+        let payment_id = Uuid::new_v4();
+        let confirmation = repo
+            .create(Confirmation::new(ConfirmationSubject::Payment(payment_id)))
+            .await;
+
+        let found = repo.find_by_payment_id(payment_id).await.unwrap();
+        assert_eq!(found.id, confirmation.id);
+        assert_eq!(repo.find_by_payment_id(Uuid::new_v4()).await, None);
     }
 
     #[tokio::test]

@@ -1,9 +1,38 @@
+async function loadConfirmations() {
+  const confirmations = await fetch("/confirmations?state=pending").then((r) => r.json());
+  document.getElementById("confirmations-body").innerHTML = confirmations
+    .map((c) => {
+      const subject = c.subject.type === "payment" ? `payment ${c.subject.payment_id}` : c.subject.type;
+      return `<tr>
+        <td>${subject}</td>
+        <td>${c.created_at}</td>
+        <td>
+          <button data-id="${c.id}" data-approved="true">Approve</button>
+          <button data-id="${c.id}" data-approved="false">Reject</button>
+        </td>
+      </tr>`;
+    })
+    .join("");
+}
+
+document.getElementById("confirmations-body").addEventListener("click", async (e) => {
+  const button = e.target.closest("button[data-id]");
+  if (!button) return;
+  await fetch(`/confirmations/${button.dataset.id}/decide`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ approved: button.dataset.approved === "true" }),
+  });
+  loadConfirmations();
+  loadPayments();
+});
+
 async function loadPayments() {
   const payments = await fetch("/payments").then((r) => r.json());
   document.getElementById("payments-body").innerHTML = payments
     .map((p) => {
       const source = p.source.type === "manual" ? "manual" : `schedule (${p.source.occurrence_date})`;
-      return `<tr><td>${p.total.amount} ${p.total.currency}</td><td>${source}</td><td>${p.created_at}</td></tr>`;
+      return `<tr><td>${p.total.amount} ${p.total.currency}</td><td>${source}</td><td>${p.confirmation_state}</td><td>${p.created_at}</td></tr>`;
     })
     .join("");
 }
@@ -31,6 +60,7 @@ document.getElementById("payment-form").addEventListener("submit", async (e) => 
   });
   e.target.reset();
   loadPayments();
+  loadConfirmations();
 });
 
 document.getElementById("schedule-form").addEventListener("submit", async (e) => {
@@ -52,5 +82,6 @@ document.getElementById("schedule-form").addEventListener("submit", async (e) =>
   loadSchedules();
 });
 
+loadConfirmations();
 loadPayments();
 loadSchedules();
