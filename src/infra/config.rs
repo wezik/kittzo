@@ -1,11 +1,14 @@
 use serde::Deserialize;
 use std::path::Path;
 
+use crate::domain::payment_schedule::PaymentScheduleConfig;
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct Config {
     pub server_port: u16,
     pub log_level: String,
+    payment_schedule: TomlPaymentScheduleConfig,
 }
 
 impl Default for Config {
@@ -13,6 +16,7 @@ impl Default for Config {
         Self {
             server_port: 7878,
             log_level: "info".to_string(),
+            payment_schedule: TomlPaymentScheduleConfig::default(),
         }
     }
 }
@@ -23,6 +27,10 @@ impl Config {
 
     pub fn load() -> Config {
         Config::load_from(Path::new(DEFAULT_PATH))
+    }
+
+    pub fn payment_schedule(&self) -> PaymentScheduleConfig {
+        self.payment_schedule.clone().into()
     }
 
     fn load_from(path: &Path) -> Config {
@@ -43,6 +51,34 @@ impl Config {
     }
 }
 
+/// Raw TOML shape for `[payment_schedule]` — kept separate from the domain
+/// `PaymentScheduleConfig` so the domain type stays serde-free; this is the only
+/// place that knows the wire format, converting into the domain type via `From`.
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[serde(default)]
+struct TomlPaymentScheduleConfig {
+    poll_interval_secs: u64,
+    retry_after_secs: u64,
+}
+
+impl Default for TomlPaymentScheduleConfig {
+    fn default() -> Self {
+        Self {
+            poll_interval_secs: 3600,
+            retry_after_secs: 1800,
+        }
+    }
+}
+
+impl From<TomlPaymentScheduleConfig> for PaymentScheduleConfig {
+    fn from(toml: TomlPaymentScheduleConfig) -> Self {
+        PaymentScheduleConfig {
+            poll_interval_secs: toml.poll_interval_secs,
+            retry_after_secs: toml.retry_after_secs,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -59,6 +95,22 @@ mod tests {
         let cfg = Config::parse("server_port = 1234\nlog_level = \"debug\"\n");
         assert_eq!(cfg.server_port, 1234);
         assert_eq!(cfg.log_level, "debug");
+    }
+
+    #[test]
+    fn payment_schedule_section_falls_back_to_defaults_when_absent() {
+        let cfg = Config::parse("server_port = 1234\n");
+        assert_eq!(cfg.payment_schedule().poll_interval_secs, 3600);
+        assert_eq!(cfg.payment_schedule().retry_after_secs, 1800);
+    }
+
+    #[test]
+    fn payment_schedule_section_parses_when_present() {
+        let cfg = Config::parse(
+            "[payment_schedule]\npoll_interval_secs = 60\nretry_after_secs = 30\n",
+        );
+        assert_eq!(cfg.payment_schedule().poll_interval_secs, 60);
+        assert_eq!(cfg.payment_schedule().retry_after_secs, 30);
     }
 
     #[test]

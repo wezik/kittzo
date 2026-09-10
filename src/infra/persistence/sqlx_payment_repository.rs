@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use sqlx::{Row, SqlitePool, sqlite::SqliteRow};
-use time::OffsetDateTime;
+use time::{Date, OffsetDateTime};
 use uuid::Uuid;
 
 use crate::domain::money::Money;
@@ -20,15 +20,18 @@ impl SqlitePaymentRepository {
 #[async_trait]
 impl PaymentRepository for SqlitePaymentRepository {
     async fn create(&self, payment: Payment) -> Payment {
+        let (schedule_id, occurrence_date) = schedule_source_parts(&payment.source);
         sqlx::query(
-            "INSERT INTO payments (id, version, amount, created_at, source_type)
-             VALUES (?, ?, ?, ?, ?)",
+            "INSERT INTO payments (id, version, total, created_at, source_type, schedule_id, occurrence_date)
+             VALUES (?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(payment.id.to_string())
         .bind(payment.version.as_u32() as i64)
-        .bind(&payment.amount)
+        .bind(&payment.total)
         .bind(payment.created_at)
         .bind(source_type(&payment.source))
+        .bind(schedule_id)
+        .bind(occurrence_date)
         .execute(&self.pool)
         .await
         .expect("failed to insert payment");
@@ -59,25 +62,44 @@ impl PaymentRepository for SqlitePaymentRepository {
 fn source_type(source: &PaymentSource) -> &'static str {
     match source {
         PaymentSource::Manual => "manual",
+        PaymentSource::Schedule { .. } => "schedule",
+    }
+}
+
+fn schedule_source_parts(source: &PaymentSource) -> (Option<String>, Option<Date>) {
+    match source {
+        PaymentSource::Manual => (None, None),
+        PaymentSource::Schedule {
+            schedule_id,
+            occurrence_date,
+        } => (Some(schedule_id.to_string()), Some(*occurrence_date)),
     }
 }
 
 fn row_to_payment(row: &SqliteRow) -> Payment {
     let id: String = row.get("id");
     let version: i64 = row.get("version");
-    let amount: Money = row.get("amount");
+    let total: Money = row.get("total");
     let created_at: OffsetDateTime = row.get("created_at");
     let source_type: String = row.get("source_type");
 
     let source = match source_type.as_str() {
         "manual" => PaymentSource::Manual,
+        "schedule" => {
+            let schedule_id: String = row.get("schedule_id");
+            let occurrence_date: Date = row.get("occurrence_date");
+            PaymentSource::Schedule {
+                schedule_id: Uuid::parse_str(&schedule_id).expect("invalid schedule id uuid"),
+                occurrence_date,
+            }
+        }
         other => panic!("unknown source_type in db: {other}"),
     };
 
     Payment {
         id: Uuid::parse_str(&id).expect("invalid payment id uuid"),
         version: Version::from_u32(version as u32),
-        amount,
+        total,
         created_at,
         source,
     }

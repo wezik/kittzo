@@ -7,8 +7,11 @@ use std::sync::atomic::AtomicBool;
 
 use api::AppState;
 use domain::payment::{PaymentRepository, PaymentService};
+use domain::payment_schedule::{PaymentScheduleJob, PaymentScheduleRepository, PaymentScheduleService};
+use domain::startup_task::StartupTask;
 use infra::Config;
 use infra::persistence::sqlx_payment_repository::SqlitePaymentRepository;
+use infra::persistence::sqlx_payment_schedule_repository::SqlitePaymentScheduleRepository;
 
 fn main() {
     infra::init();
@@ -34,9 +37,29 @@ async fn serve(config: Config) {
     let pool = infra::persistence::connect("sqlite:kittzo.db")
         .await
         .expect("failed to connect to database");
-    let payment_repo: Arc<dyn PaymentRepository> = Arc::new(SqlitePaymentRepository::new(pool));
+    let payment_repo: Arc<dyn PaymentRepository> =
+        Arc::new(SqlitePaymentRepository::new(pool.clone()));
+    let schedule_repo: Arc<dyn PaymentScheduleRepository> =
+        Arc::new(SqlitePaymentScheduleRepository::new(pool));
+
+    let payment_service = Arc::new(PaymentService::new(payment_repo));
+    let schedule_service = Arc::new(PaymentScheduleService::new(schedule_repo));
+
+    let tasks: Vec<Arc<dyn StartupTask>> = vec![Arc::new(PaymentScheduleJob::new(
+        payment_service.clone(),
+        schedule_service.clone(),
+        config.payment_schedule(),
+    ))];
+    for task in tasks {
+        tokio::spawn(async move {
+            tracing::info!(name = task.name(), "running startup task");
+            task.run().await;
+        });
+    }
+
     let state = AppState {
-        payment_service: Arc::new(PaymentService::new(payment_repo)),
+        payment_service,
+        schedule_service,
     };
 
     let addr = format!("127.0.0.1:{}", config.server_port);

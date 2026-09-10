@@ -4,13 +4,13 @@ use axum::response::{IntoResponse, Json};
 use axum::routing::{get, post};
 use axum::Router;
 use serde::{Deserialize, Serialize};
-use time::OffsetDateTime;
 use uuid::Uuid;
 
 use crate::domain::money::Money;
 use crate::domain::payment::{Payment, PaymentSource};
 
 use super::AppState;
+use super::serializers::rfc3339::OffsetDateTimeDto;
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -21,16 +21,15 @@ pub fn router() -> Router<AppState> {
 
 #[derive(Deserialize)]
 struct IngestRequest {
-    amount: Money,
+    total: Money,
 }
 
 #[derive(Serialize)]
 struct PaymentResponse {
     id: Uuid,
     version: u32,
-    amount: Money,
-    #[serde(with = "time::serde::rfc3339")]
-    created_at: OffsetDateTime,
+    total: Money,
+    created_at: OffsetDateTimeDto,
     source: PaymentSourceResponse,
 }
 
@@ -38,6 +37,10 @@ struct PaymentResponse {
 #[serde(tag = "type", rename_all = "snake_case")]
 enum PaymentSourceResponse {
     Manual,
+    Schedule {
+        schedule_id: Uuid,
+        occurrence_date: String,
+    },
 }
 
 impl From<Payment> for PaymentResponse {
@@ -45,8 +48,8 @@ impl From<Payment> for PaymentResponse {
         PaymentResponse {
             id: payment.id,
             version: payment.version.as_u32(),
-            amount: payment.amount,
-            created_at: payment.created_at,
+            total: payment.total,
+            created_at: payment.created_at.into(),
             source: payment.source.into(),
         }
     }
@@ -56,6 +59,13 @@ impl From<PaymentSource> for PaymentSourceResponse {
     fn from(source: PaymentSource) -> Self {
         match source {
             PaymentSource::Manual => PaymentSourceResponse::Manual,
+            PaymentSource::Schedule {
+                schedule_id,
+                occurrence_date,
+            } => PaymentSourceResponse::Schedule {
+                schedule_id,
+                occurrence_date: occurrence_date.to_string(),
+            },
         }
     }
 }
@@ -64,7 +74,10 @@ async fn ingest(
     State(state): State<AppState>,
     Json(body): Json<IngestRequest>,
 ) -> impl IntoResponse {
-    let payment = state.payment_service.ingest(body.amount).await;
+    let payment = state
+        .payment_service
+        .create(body.total, PaymentSource::Manual)
+        .await;
     (StatusCode::CREATED, Json(PaymentResponse::from(payment)))
 }
 

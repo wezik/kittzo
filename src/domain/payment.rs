@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use time::OffsetDateTime;
+use time::{Date, OffsetDateTime};
 use uuid::Uuid;
 
 use super::money::Money;
@@ -11,7 +11,7 @@ use super::version::Version;
 pub struct Payment {
     pub id: Uuid,
     pub version: Version,
-    pub amount: Money,
+    pub total: Money,
     pub created_at: OffsetDateTime,
     pub source: PaymentSource,
 }
@@ -19,14 +19,18 @@ pub struct Payment {
 #[derive(Clone, Debug, PartialEq)]
 pub enum PaymentSource {
     Manual,
+    Schedule {
+        schedule_id: Uuid,
+        occurrence_date: Date,
+    },
 }
 
 impl Payment {
-    pub fn new(amount: Money, source: PaymentSource) -> Self {
+    pub fn new(total: Money, source: PaymentSource) -> Self {
         Payment {
             id: Uuid::new_v4(),
             version: Version::FIRST,
-            amount,
+            total,
             created_at: OffsetDateTime::now_utc(),
             source,
         }
@@ -49,10 +53,10 @@ impl PaymentService {
         Self { repo }
     }
 
-    pub async fn ingest(&self, amount: Money) -> Payment {
-        let payment = Payment::new(amount, PaymentSource::Manual);
+    pub async fn create(&self, total: Money, source: PaymentSource) -> Payment {
+        let payment = Payment::new(total, source);
         let created = self.repo.create(payment).await;
-        tracing::info!(payment_id = %created.id, "ingested payment");
+        tracing::info!(payment_id = %created.id, "created payment");
         created
     }
 
@@ -74,9 +78,9 @@ mod tests {
 
     #[test]
     fn new_assigns_distinct_ids() {
-        let amount = Money::from_minor(1, iso::USD);
-        let a = Payment::new(amount.clone(), PaymentSource::Manual);
-        let b = Payment::new(amount, PaymentSource::Manual);
+        let total = Money::from_minor(1, iso::USD);
+        let a = Payment::new(total.clone(), PaymentSource::Manual);
+        let b = Payment::new(total, PaymentSource::Manual);
 
         assert_ne!(a.id, b.id);
     }
@@ -87,19 +91,25 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn ingest_creates_and_returns_a_payment() {
+    async fn create_with_manual_source_returns_a_payment() {
         let service = service().await;
-        let payment = service.ingest(Money::from_minor(500, iso::USD)).await;
+        let payment = service
+            .create(Money::from_minor(500, iso::USD), PaymentSource::Manual)
+            .await;
 
         assert_eq!(payment.source, PaymentSource::Manual);
         assert_eq!(service.find_by_id(payment.id).await, Some(payment));
     }
 
     #[tokio::test]
-    async fn find_all_returns_every_ingested_payment() {
+    async fn find_all_returns_every_created_payment() {
         let service = service().await;
-        service.ingest(Money::from_minor(100, iso::USD)).await;
-        service.ingest(Money::from_minor(200, iso::USD)).await;
+        service
+            .create(Money::from_minor(100, iso::USD), PaymentSource::Manual)
+            .await;
+        service
+            .create(Money::from_minor(200, iso::USD), PaymentSource::Manual)
+            .await;
 
         assert_eq!(service.find_all().await.len(), 2);
     }

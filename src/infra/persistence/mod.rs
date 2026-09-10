@@ -7,6 +7,7 @@ use sqlx::{Sqlite, SqlitePool};
 use crate::domain::money::Money;
 
 pub mod sqlx_payment_repository;
+pub mod sqlx_payment_schedule_repository;
 
 // one connection avoids `SQLITE_BUSY` contention between writers.
 pub async fn connect(url: &str) -> sqlx::Result<SqlitePool> {
