@@ -53,4 +53,26 @@ mod tests {
         let decoded: Money = wire.parse().unwrap();
         assert_eq!(decoded, money);
     }
+
+    #[tokio::test]
+    async fn money_round_trips_through_sqlite_column() {
+        let pool = connect("sqlite::memory:").await.unwrap();
+        sqlx::query("CREATE TABLE t (amount TEXT NOT NULL)")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let money = Money::from_minor(1099, iso::USD);
+        sqlx::query("INSERT INTO t (amount) VALUES (?)")
+            .bind(&money)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let (decoded,): (Money,) = sqlx::query_as("SELECT amount FROM t")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(decoded, money);
+    }
 }
