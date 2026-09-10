@@ -13,8 +13,8 @@ toml = "0.9"
 rusty-money = { version = "0.5.0", features = ["serde"] }
 rust_decimal = "1.43"
 sqlx = { version = "0.8", features = ["sqlite", "runtime-tokio", "migrate", "time"] }
-uuid = { version = "1.26.1", features = ["v4"] }
-time = { version = "0.3.55", features = ["serde", "std"] }
+uuid = { version = "1.26.1", features = ["serde", "v4"] }
+time = { version = "0.3.55", features = ["serde", "std", "formatting"] }
 async-trait = "0.1.92"
 tray-icon = "0.24.2"
 tao = "0.37.0"

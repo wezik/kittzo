@@ -1,5 +1,7 @@
+use std::sync::Arc;
+
 use async_trait::async_trait;
-use time::{Date, OffsetDateTime};
+use time::OffsetDateTime;
 use uuid::Uuid;
 
 use super::money::Money;
@@ -17,8 +19,6 @@ pub struct Payment {
 #[derive(Clone, Debug, PartialEq)]
 pub enum PaymentSource {
     Manual,
-    Schedule { schedule_id: Uuid, due_date: Date },
-    Ingested,
 }
 
 impl Payment {
@@ -40,9 +40,36 @@ pub trait PaymentRepository: Send + Sync {
     async fn find_all(&self) -> Vec<Payment>;
 }
 
+pub struct PaymentService {
+    repo: Arc<dyn PaymentRepository>,
+}
+
+impl PaymentService {
+    pub fn new(repo: Arc<dyn PaymentRepository>) -> Self {
+        Self { repo }
+    }
+
+    pub async fn ingest(&self, amount: Money) -> Payment {
+        let payment = Payment::new(amount, PaymentSource::Manual);
+        let created = self.repo.create(payment).await;
+        tracing::info!(payment_id = %created.id, "ingested payment");
+        created
+    }
+
+    pub async fn find_by_id(&self, id: Uuid) -> Option<Payment> {
+        self.repo.find_by_id(id).await
+    }
+
+    pub async fn find_all(&self) -> Vec<Payment> {
+        self.repo.find_all().await
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::infra::persistence::connect;
+    use crate::infra::persistence::sqlx_payment_repository::SqlitePaymentRepository;
     use rusty_money::iso;
 
     #[test]
@@ -52,5 +79,28 @@ mod tests {
         let b = Payment::new(amount, PaymentSource::Manual);
 
         assert_ne!(a.id, b.id);
+    }
+
+    async fn service() -> PaymentService {
+        let pool = connect("sqlite::memory:").await.unwrap();
+        PaymentService::new(Arc::new(SqlitePaymentRepository::new(pool)))
+    }
+
+    #[tokio::test]
+    async fn ingest_creates_and_returns_a_payment() {
+        let service = service().await;
+        let payment = service.ingest(Money::from_minor(500, iso::USD)).await;
+
+        assert_eq!(payment.source, PaymentSource::Manual);
+        assert_eq!(service.find_by_id(payment.id).await, Some(payment));
+    }
+
+    #[tokio::test]
+    async fn find_all_returns_every_ingested_payment() {
+        let service = service().await;
+        service.ingest(Money::from_minor(100, iso::USD)).await;
+        service.ingest(Money::from_minor(200, iso::USD)).await;
+
+        assert_eq!(service.find_all().await.len(), 2);
     }
 }

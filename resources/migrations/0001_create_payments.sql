@@ -3,7 +3,5 @@ CREATE TABLE payments (
     version INTEGER NOT NULL,
     amount TEXT NOT NULL,
     created_at TEXT NOT NULL,
-    source_type TEXT NOT NULL,
-    schedule_id TEXT,
-    due_date TEXT
+    source_type TEXT NOT NULL
 );

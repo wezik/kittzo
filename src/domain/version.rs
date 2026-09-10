@@ -1,9 +1,3 @@
-/// Version of a domain object.
-///
-/// Domain objects are versioned to deal with concurrent modification: each action on an
-/// object increments its version, and callers can pass back the version they last saw so
-/// the system can tell a stale write from a current one and reject it, rather than
-/// silently overwriting a concurrent change.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Version(u32);
 

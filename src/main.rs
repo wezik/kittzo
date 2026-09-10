@@ -5,7 +5,8 @@ mod infra;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
-use domain::payment::PaymentRepository;
+use api::AppState;
+use domain::payment::{PaymentRepository, PaymentService};
 use infra::Config;
 use infra::persistence::sqlx_payment_repository::SqlitePaymentRepository;
 
@@ -33,7 +34,10 @@ async fn serve(config: Config) {
     let pool = infra::persistence::connect("sqlite:kittzo.db")
         .await
         .expect("failed to connect to database");
-    let _payment_repo: Arc<dyn PaymentRepository> = Arc::new(SqlitePaymentRepository::new(pool));
+    let payment_repo: Arc<dyn PaymentRepository> = Arc::new(SqlitePaymentRepository::new(pool));
+    let state = AppState {
+        payment_service: Arc::new(PaymentService::new(payment_repo)),
+    };
 
     let addr = format!("127.0.0.1:{}", config.server_port);
     let listener = tokio::net::TcpListener::bind(&addr)
@@ -41,7 +45,7 @@ async fn serve(config: Config) {
         .expect("failed to bind server address");
     tracing::info!(%addr, "listening");
 
-    axum::serve(listener, api::router())
+    axum::serve(listener, api::router(state))
         .await
         .expect("server error");
 }
