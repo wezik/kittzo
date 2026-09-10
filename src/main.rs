@@ -1,5 +1,11 @@
+mod infra;
+
+use infra::Config;
+
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::fmt::init();
-    tracing::info!("kittzo starting up");
+    infra::init();
+    tracing::info!("starting up");
+
+    let _config = Config::load();
 }
