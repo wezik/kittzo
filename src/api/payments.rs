@@ -2,7 +2,7 @@ use axum::Router;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Json};
-use axum::routing::{get, post};
+use axum::routing::get;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -15,13 +15,12 @@ use super::serializers::rfc3339::OffsetDateTimeDto;
 
 pub fn router() -> Router<AppState> {
     Router::new()
-        .route("/ingest", post(ingest))
-        .route("/payments", get(list))
+        .route("/payments", get(list).post(create))
         .route("/payments/{id}", get(find_by_id))
 }
 
 #[derive(Deserialize)]
-struct IngestRequest {
+struct CreateRequest {
     total: Money,
 }
 
@@ -83,14 +82,13 @@ impl From<PaymentSource> for PaymentSourceResponse {
     }
 }
 
-async fn ingest(
+async fn create(
     State(state): State<AppState>,
-    Json(body): Json<IngestRequest>,
+    Json(body): Json<CreateRequest>,
 ) -> impl IntoResponse {
     let command = CreatePaymentCommand {
         total: body.total,
         source: PaymentSource::Manual,
-        auto_ack: true,
     };
 
     match state.payment_service.create(command).await {

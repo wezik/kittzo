@@ -43,7 +43,8 @@ fn main() {
 async fn serve(config: Config) {
     let pool = infra::persistence::connect("sqlite:kittzo.db")
         .await
-        .expect("failed to connect to database");
+        .expect("failed to connect to database"); // intentional panic, db is a necessary dependency
+    
     let payment_repo: Arc<dyn PaymentRepository> =
         Arc::new(SqlitePaymentRepository::new(pool.clone()));
     let schedule_repo: Arc<dyn PaymentScheduleRepository> =

@@ -7,7 +7,9 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::domain::money::Money;
-use crate::domain::payment_schedule::{PaymentSchedule, PaymentScheduleStatus, Recurrence};
+use crate::domain::payment_schedule::{
+    PaymentSchedule, PaymentScheduleError, PaymentScheduleStatus, Recurrence,
+};
 
 use super::AppState;
 use super::serializers::rfc3339::OffsetDateTimeDto;
@@ -97,23 +99,36 @@ async fn create(
     State(state): State<AppState>,
     Json(body): Json<CreateScheduleRequest>,
 ) -> impl IntoResponse {
-    let created = state
+    match state
         .schedule_service
         .create(body.total, body.recurrence.into())
-        .await;
-    (
-        StatusCode::CREATED,
-        Json(PaymentScheduleResponse::from(created)),
-    )
+        .await
+    {
+        Ok(created) => (
+            StatusCode::CREATED,
+            Json(PaymentScheduleResponse::from(created)),
+        )
+            .into_response(),
+        Err(PaymentScheduleError::AlreadyExists) => StatusCode::CONFLICT.into_response(),
+        Err(err) => {
+            tracing::error!(%err, "failed to create payment schedule");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+    }
 }
 
 async fn list(State(state): State<AppState>) -> impl IntoResponse {
-    let schedules: Vec<PaymentScheduleResponse> = state
-        .schedule_service
-        .find_all()
-        .await
+    let schedules = match state.schedule_service.find_all().await {
+        Ok(schedules) => schedules,
+        Err(err) => {
+            tracing::error!(%err, "failed to list payment schedules");
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
+    };
+
+    let schedules: Vec<PaymentScheduleResponse> = schedules
         .into_iter()
         .map(PaymentScheduleResponse::from)
         .collect();
-    Json(schedules)
+    Json(schedules).into_response()
 }

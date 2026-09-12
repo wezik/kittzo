@@ -63,7 +63,6 @@ pub trait PaymentRepository: Send + Sync {
 pub struct CreatePaymentCommand {
     pub total: Money,
     pub source: PaymentSource,
-    pub auto_ack: bool,
 }
 
 pub struct PaymentService {
@@ -80,15 +79,22 @@ impl PaymentService {
     }
 
     pub async fn create(&self, cmd: CreatePaymentCommand) -> Result<Payment, PaymentError> {
-        let entity = Payment::new(cmd.total, cmd.source);
-        let payment = self.repo.create(entity).await?;
+        let auto_ack = match cmd.source {
+            PaymentSource::Manual => false,
+            PaymentSource::Schedule { .. } => true,
+        };
+
+        let payment = self
+            .repo
+            .create(Payment::new(cmd.total, cmd.source))
+            .await?;
 
         // SYNC CONFIRMATIONS
-        // TODO: This part is destined to be hidden behind an event / eventbus?
+        // TODO: This part is destined to be hidden behind an event / eventbus / outbox?
         // the shape is still to be decided and the op will be performed asnchronously.
         let confirmation_cmd = CreateConfirmationCommand {
             subject: ConfirmationSubject::Payment(payment.id),
-            automatic_confirmation: cmd.auto_ack,
+            automatic_confirmation: auto_ack,
         };
 
         self.confirmations.create(confirmation_cmd).await?;
@@ -109,8 +115,12 @@ impl PaymentService {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Mutex;
+
     use super::*;
-    use crate::domain::confirmation::{MockConfirmationRepository, MockNotifier};
+    use crate::domain::confirmation::{
+        Confirmation, ConfirmationState, MockConfirmationRepository, MockNotifier,
+    };
 
     fn usd(amount: &str) -> Money {
         Money::from_parts("USD", amount).unwrap()
@@ -135,6 +145,29 @@ mod tests {
         PaymentService::new(Arc::new(repo), confirmations)
     }
 
+    // captures the `Confirmation` handed to `ConfirmationRepository::create`, so a test can
+    // assert on the confirmation policy `PaymentService::create` picked for a given source.
+    fn service_capturing_confirmation() -> (PaymentService, Arc<Mutex<Option<Confirmation>>>) {
+        let captured: Arc<Mutex<Option<Confirmation>>> = Arc::new(Mutex::new(None));
+        let capture = captured.clone();
+        let mut confirmation_repo = MockConfirmationRepository::new();
+        confirmation_repo
+            .expect_create()
+            .returning(move |confirmation| {
+                *capture.lock().unwrap() = Some(confirmation.clone());
+                confirmation
+            });
+        let confirmations = Arc::new(ConfirmationService::new(
+            Arc::new(confirmation_repo),
+            Arc::new(MockNotifier::new()),
+        ));
+
+        let mut repo = MockPaymentRepository::new();
+        repo.expect_create().returning(|payment| Ok(payment));
+
+        (PaymentService::new(Arc::new(repo), confirmations), captured)
+    }
+
     #[tokio::test]
     async fn create_returns_the_created_payment() {
         // given
@@ -149,7 +182,6 @@ mod tests {
             .create(CreatePaymentCommand {
                 total: usd("5.00"),
                 source: PaymentSource::Manual,
-                auto_ack: true,
             })
             .await
             .unwrap();
@@ -157,6 +189,47 @@ mod tests {
         // then
         assert_eq!(payment.id, expected.id);
         assert_eq!(payment.source, expected.source);
+    }
+
+    #[tokio::test]
+    async fn create_with_manual_source_requires_confirmation() {
+        // given
+        let (service, captured) = service_capturing_confirmation();
+
+        // when
+        service
+            .create(CreatePaymentCommand {
+                total: usd("5.00"),
+                source: PaymentSource::Manual,
+            })
+            .await
+            .unwrap();
+
+        // then
+        let state = captured.lock().unwrap().as_ref().unwrap().state;
+        assert_eq!(state, ConfirmationState::Queued);
+    }
+
+    #[tokio::test]
+    async fn create_with_schedule_source_auto_confirms() {
+        // given
+        let (service, captured) = service_capturing_confirmation();
+
+        // when
+        service
+            .create(CreatePaymentCommand {
+                total: usd("5.00"),
+                source: PaymentSource::Schedule {
+                    schedule_id: Uuid::new_v4(),
+                    occurrence_date: OffsetDateTime::now_utc().date(),
+                },
+            })
+            .await
+            .unwrap();
+
+        // then
+        let state = captured.lock().unwrap().as_ref().unwrap().state;
+        assert_eq!(state, ConfirmationState::Approved);
     }
 
     #[tokio::test]

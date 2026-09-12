@@ -84,5 +84,6 @@ async fn decide(
         Ok(confirmation) => Json(ConfirmationResponse::from(confirmation)).into_response(),
         Err(DecideError::NotFound) => StatusCode::NOT_FOUND.into_response(),
         Err(DecideError::AlreadyDecided) => StatusCode::CONFLICT.into_response(),
+        Err(DecideError::ConcurrentUpdate) => StatusCode::CONFLICT.into_response(),
     }
 }

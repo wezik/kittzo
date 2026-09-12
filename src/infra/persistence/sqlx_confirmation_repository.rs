@@ -4,7 +4,7 @@ use time::OffsetDateTime;
 use uuid::Uuid;
 
 use crate::domain::confirmation::{
-    Confirmation, ConfirmationRepository, ConfirmationState, ConfirmationSubject,
+    Confirmation, ConfirmationError, ConfirmationRepository, ConfirmationState, ConfirmationSubject,
 };
 use crate::domain::version::Version;
 
@@ -25,7 +25,7 @@ impl ConfirmationRepository for SqliteConfirmationRepository {
         confirmation
     }
 
-    async fn update(&self, confirmation: Confirmation) -> Confirmation {
+    async fn update(&self, confirmation: Confirmation) -> Result<Confirmation, ConfirmationError> {
         let next_version = confirmation.version.next();
 
         let result = sqlx::query(
@@ -41,19 +41,35 @@ impl ConfirmationRepository for SqliteConfirmationRepository {
         .bind(confirmation.version.as_u32() as i64)
         .execute(&self.pool)
         .await
-        .expect("failed to update confirmation");
+        .map_err(|sqlx_err| {
+            tracing::error!(%sqlx_err, "unexpected sqlx error");
+            ConfirmationError::Persistence
+        })?;
 
         if result.rows_affected() == 0 {
-            panic!(
-                "confirmation {} updated concurrently or missing",
-                confirmation.id
-            );
+            // the UPDATE didn't say why it matched no rows, so a lost version race and a
+            // missing id look the same until checked separately.
+            let exists = sqlx::query("SELECT 1 FROM confirmations WHERE id = ?")
+                .bind(confirmation.id.to_string())
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(|sqlx_err| {
+                    tracing::error!(%sqlx_err, "unexpected sqlx error");
+                    ConfirmationError::Persistence
+                })?
+                .is_some();
+
+            return Err(if exists {
+                ConfirmationError::ConcurrentUpdate
+            } else {
+                ConfirmationError::NotFound
+            });
         }
 
-        Confirmation {
+        Ok(Confirmation {
             version: next_version,
             ..confirmation
-        }
+        })
     }
 
     async fn find_by_id(&self, id: Uuid) -> Option<Confirmation> {
@@ -170,11 +186,16 @@ mod tests {
         SqliteConfirmationRepository::new(pool)
     }
 
-    async fn queued(repo: &SqliteConfirmationRepository, payment_id: Uuid) -> Confirmation {
-        let confirmation = Confirmation::new(CreateConfirmationCommand {
+    fn some_confirmation(payment_id: Uuid) -> Confirmation {
+        Confirmation::new(CreateConfirmationCommand {
             subject: ConfirmationSubject::Payment(payment_id),
             automatic_confirmation: false,
-        });
+        })
+    }
+
+    // seeds a row via `insert_confirmation` directly, bypassing `create` (tested on its own below).
+    async fn queued(repo: &SqliteConfirmationRepository, payment_id: Uuid) -> Confirmation {
+        let confirmation = some_confirmation(payment_id);
         insert_confirmation(&repo.pool, &confirmation).await;
         confirmation
     }
@@ -184,76 +205,133 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn create_and_find_by_id_round_trips() {
+    async fn create_returns_the_created_confirmation() {
+        // given
         let repo = repo().await;
-        let confirmation = Confirmation::new(CreateConfirmationCommand {
-            subject: ConfirmationSubject::Payment(Uuid::new_v4()),
-            automatic_confirmation: false,
-        });
+        let confirmation = some_confirmation(Uuid::new_v4());
 
+        // when
         let created = repo.create(confirmation.clone()).await;
-        assert_eq!(created, confirmation);
 
-        let found = repo.find_by_id(confirmation.id).await.unwrap();
-        assert_eq!(found, confirmation);
+        // then
+        assert_eq!(created, confirmation);
     }
 
     #[tokio::test]
-    async fn insert_and_find_by_id_round_trips() {
+    async fn find_by_id_returns_the_confirmation() {
+        // given
         let repo = repo().await;
         let confirmation = some_queued(&repo).await;
 
-        let found = repo.find_by_id(confirmation.id).await.unwrap();
-        assert_eq!(found, confirmation);
+        // when
+        let found = repo.find_by_id(confirmation.id).await;
+
+        // then
+        assert_eq!(found, Some(confirmation));
     }
 
     #[tokio::test]
     async fn find_by_id_missing_returns_none() {
+        // given
         let repo = repo().await;
-        assert_eq!(repo.find_by_id(Uuid::new_v4()).await, None);
+
+        // when
+        let found = repo.find_by_id(Uuid::new_v4()).await;
+
+        // then
+        assert_eq!(found, None);
     }
 
     #[tokio::test]
-    async fn update_persists_decision_and_bumps_version() {
+    async fn update_persists_the_decision_and_bumps_the_version() {
+        // given
         let repo = repo().await;
         let mut confirmation = some_queued(&repo).await;
         confirmation.decide(true).unwrap();
 
-        let updated = repo.update(confirmation.clone()).await;
+        // when
+        let updated = repo.update(confirmation.clone()).await.unwrap();
 
+        // then
         assert_eq!(updated.version, confirmation.version.next());
         assert_eq!(updated.state, ConfirmationState::Approved);
         assert!(updated.decided_at.is_some());
     }
 
     #[tokio::test]
+    async fn update_rejects_a_stale_version() {
+        // given
+        let repo = repo().await;
+        let confirmation = some_queued(&repo).await;
+        // simulate a concurrent writer having already advanced this confirmation's version.
+        repo.update(confirmation.clone()).await.unwrap();
+
+        // when
+        let err = repo.update(confirmation).await.unwrap_err();
+
+        // then
+        assert!(matches!(err, ConfirmationError::ConcurrentUpdate));
+    }
+
+    #[tokio::test]
+    async fn update_rejects_a_missing_confirmation() {
+        // given
+        let repo = repo().await;
+        let confirmation = some_confirmation(Uuid::new_v4());
+
+        // when
+        let err = repo.update(confirmation).await.unwrap_err();
+
+        // then
+        assert!(matches!(err, ConfirmationError::NotFound));
+    }
+
+    #[tokio::test]
     async fn find_by_payment_id_returns_its_confirmation() {
+        // given
         let repo = repo().await;
         let payment_id = Uuid::new_v4();
         let confirmation = queued(&repo, payment_id).await;
 
-        let found = repo.find_by_payment_id(payment_id).await.unwrap();
-        assert_eq!(found.id, confirmation.id);
-        assert_eq!(repo.find_by_payment_id(Uuid::new_v4()).await, None);
+        // when
+        let found = repo.find_by_payment_id(payment_id).await;
+
+        // then
+        assert_eq!(found.map(|c| c.id), Some(confirmation.id));
+    }
+
+    #[tokio::test]
+    async fn find_by_payment_id_missing_returns_none() {
+        // given
+        let repo = repo().await;
+
+        // when
+        let found = repo.find_by_payment_id(Uuid::new_v4()).await;
+
+        // then
+        assert_eq!(found, None);
     }
 
     #[tokio::test]
     async fn find_by_state_matches_only_that_state() {
+        // given
         let repo = repo().await;
         let still_queued = some_queued(&repo).await;
         let mut awaiting = some_queued(&repo).await;
         awaiting.state = ConfirmationState::Awaiting;
-        let awaiting = repo.update(awaiting).await;
+        let awaiting = repo.update(awaiting).await.unwrap();
         let mut decided = some_queued(&repo).await;
         decided.decide(true).unwrap();
-        repo.update(decided).await;
+        repo.update(decided).await.unwrap();
 
-        let result = repo.find_by_state(ConfirmationState::Queued).await;
-        assert_eq!(result.len(), 1);
-        assert_eq!(result[0].id, still_queued.id);
+        // when
+        let queued_result = repo.find_by_state(ConfirmationState::Queued).await;
+        let awaiting_result = repo.find_by_state(ConfirmationState::Awaiting).await;
 
-        let result = repo.find_by_state(ConfirmationState::Awaiting).await;
-        assert_eq!(result.len(), 1);
-        assert_eq!(result[0].id, awaiting.id);
+        // then
+        assert_eq!(queued_result.len(), 1);
+        assert_eq!(queued_result[0].id, still_queued.id);
+        assert_eq!(awaiting_result.len(), 1);
+        assert_eq!(awaiting_result[0].id, awaiting.id);
     }
 }

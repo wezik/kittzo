@@ -88,7 +88,7 @@ impl Confirmation {
 #[async_trait]
 pub trait ConfirmationRepository: Send + Sync {
     async fn create(&self, confirmation: Confirmation) -> Confirmation;
-    async fn update(&self, confirmation: Confirmation) -> Confirmation;
+    async fn update(&self, confirmation: Confirmation) -> Result<Confirmation, ConfirmationError>;
     async fn find_by_id(&self, id: Uuid) -> Option<Confirmation>;
     async fn find_by_state(&self, state: ConfirmationState) -> Vec<Confirmation>;
     async fn find_by_payment_id(&self, payment_id: Uuid) -> Option<Confirmation>;
@@ -109,6 +109,7 @@ pub trait Notifier: Send + Sync {
 pub enum DecideError {
     NotFound,
     AlreadyDecided,
+    ConcurrentUpdate,
 }
 
 pub struct ConfirmationService {
@@ -125,6 +126,15 @@ pub struct CreateConfirmationCommand {
 pub enum ConfirmationError {
     #[error("confirmation already exists")]
     AlreadyExists,
+
+    #[error("confirmation not found")]
+    NotFound,
+
+    #[error("confirmation updated concurrently")]
+    ConcurrentUpdate,
+
+    #[error("unexpected persistence error")]
+    Persistence,
 }
 
 impl ConfirmationService {
@@ -143,12 +153,15 @@ impl ConfirmationService {
 
     /// A failed delivery stays `Queued` for the next `reconcile` tick - the whole
     /// self-healing mechanism, no outbox.
-    pub async fn try_deliver(&self, mut confirmation: Confirmation) -> Confirmation {
+    pub async fn try_deliver(
+        &self,
+        mut confirmation: Confirmation,
+    ) -> Result<Confirmation, ConfirmationError> {
         if self.notifier.request(&confirmation).await {
             confirmation.mark_awaiting();
-            confirmation = self.repo.update(confirmation).await;
+            confirmation = self.repo.update(confirmation).await?;
         }
-        confirmation
+        Ok(confirmation)
     }
 
     pub async fn decide(&self, id: Uuid, approved: bool) -> Result<Confirmation, DecideError> {
@@ -160,7 +173,14 @@ impl ConfirmationService {
         confirmation
             .decide(approved)
             .map_err(|_| DecideError::AlreadyDecided)?;
-        let updated = self.repo.update(confirmation).await;
+        let updated = self
+            .repo
+            .update(confirmation)
+            .await
+            .map_err(|err| match err {
+                ConfirmationError::NotFound => DecideError::NotFound,
+                _ => DecideError::ConcurrentUpdate,
+            })?;
         self.notifier.withdraw(&updated).await;
         tracing::info!(confirmation_id = %updated.id, approved, "decided confirmation");
         Ok(updated)
@@ -179,7 +199,9 @@ impl ConfirmationService {
 
     pub async fn reconcile(&self) {
         for confirmation in self.repo.find_by_state(ConfirmationState::Queued).await {
-            self.try_deliver(confirmation).await;
+            if let Err(err) = self.try_deliver(confirmation).await {
+                tracing::error!(%err, "failed to deliver confirmation");
+            }
         }
 
         let awaiting = self.repo.find_by_state(ConfirmationState::Awaiting).await;
@@ -288,14 +310,17 @@ mod tests {
             self.insert(confirmation)
         }
 
-        async fn update(&self, confirmation: Confirmation) -> Confirmation {
+        async fn update(
+            &self,
+            confirmation: Confirmation,
+        ) -> Result<Confirmation, ConfirmationError> {
             let mut confirmations = self.confirmations.lock().unwrap();
             let existing = confirmations
                 .iter_mut()
                 .find(|c| c.id == confirmation.id)
                 .expect("confirmation not found");
             *existing = confirmation.clone();
-            confirmation
+            Ok(confirmation)
         }
 
         async fn find_by_id(&self, id: Uuid) -> Option<Confirmation> {
@@ -380,7 +405,7 @@ mod tests {
 
     async fn request(repo: &FakeRepo, service: &ConfirmationService) -> Confirmation {
         let confirmation = repo.insert(Confirmation::new(some_confirmation_command()));
-        service.try_deliver(confirmation).await
+        service.try_deliver(confirmation).await.unwrap()
     }
 
     fn service(notifier: Arc<FakeNotifier>) -> (Arc<FakeRepo>, ConfirmationService) {

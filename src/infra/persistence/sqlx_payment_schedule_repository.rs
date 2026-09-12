@@ -4,7 +4,8 @@ use time::{Date, OffsetDateTime, SignedDuration};
 use uuid::Uuid;
 
 use crate::domain::payment_schedule::{
-    PaymentSchedule, PaymentScheduleRepository, PaymentScheduleStatus, Recurrence,
+    PaymentSchedule, PaymentScheduleError, PaymentScheduleRepository, PaymentScheduleStatus,
+    Recurrence,
 };
 use crate::domain::version::Version;
 
@@ -22,11 +23,15 @@ impl SqlitePaymentScheduleRepository {
 
 #[async_trait]
 impl PaymentScheduleRepository for SqlitePaymentScheduleRepository {
-    async fn create(&self, schedule: PaymentSchedule) -> PaymentSchedule {
-        sqlx::query(
+    async fn create(
+        &self,
+        schedule: PaymentSchedule,
+    ) -> Result<PaymentSchedule, PaymentScheduleError> {
+        let result = sqlx::query(
             "INSERT INTO payment_schedules
              (id, version, created_at, updated_at, total_amount, total_currency, recurrence_type, day_of_month, status, next_due_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             ON CONFLICT(id) DO NOTHING",
         )
         .bind(schedule.id.to_string())
         .bind(schedule.version.as_u32() as i64)
@@ -40,12 +45,22 @@ impl PaymentScheduleRepository for SqlitePaymentScheduleRepository {
         .bind(schedule.next_due_at)
         .execute(&self.pool)
         .await
-        .expect("failed to insert payment schedule");
+        .map_err(|sqlx_err| {
+            tracing::error!(%sqlx_err, "unexpected sqlx error");
+            PaymentScheduleError::Persistence
+        })?;
 
-        schedule
+        if result.rows_affected() == 0 {
+            return Err(PaymentScheduleError::AlreadyExists);
+        }
+
+        Ok(schedule)
     }
 
-    async fn update(&self, schedule: PaymentSchedule) -> PaymentSchedule {
+    async fn update(
+        &self,
+        schedule: PaymentSchedule,
+    ) -> Result<PaymentSchedule, PaymentScheduleError> {
         let next_version = schedule.version.next();
 
         let result = sqlx::query(
@@ -65,27 +80,46 @@ impl PaymentScheduleRepository for SqlitePaymentScheduleRepository {
         .bind(schedule.version.as_u32() as i64)
         .execute(&self.pool)
         .await
-        .expect("failed to update payment schedule");
+        .map_err(|sqlx_err| {
+            tracing::error!(%sqlx_err, "unexpected sqlx error");
+            PaymentScheduleError::Persistence
+        })?;
 
         if result.rows_affected() == 0 {
-            panic!(
-                "payment schedule {} updated concurrently or missing",
-                schedule.id
-            );
+            // the UPDATE didn't say why it matched no rows, so a lost version race and a
+            // missing id look the same until checked separately.
+            let exists = sqlx::query("SELECT 1 FROM payment_schedules WHERE id = ?")
+                .bind(schedule.id.to_string())
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(|sqlx_err| {
+                    tracing::error!(%sqlx_err, "unexpected sqlx error");
+                    PaymentScheduleError::Persistence
+                })?
+                .is_some();
+
+            return Err(if exists {
+                PaymentScheduleError::ConcurrentUpdate
+            } else {
+                PaymentScheduleError::NotFound
+            });
         }
 
-        PaymentSchedule {
+        Ok(PaymentSchedule {
             version: next_version,
             ..schedule
-        }
+        })
     }
 
-    async fn claim_due(&self, retry_after: SignedDuration) -> Vec<PaymentSchedule> {
+    async fn claim_due(
+        &self,
+        retry_after: SignedDuration,
+    ) -> Result<Vec<PaymentSchedule>, PaymentScheduleError> {
         let now = OffsetDateTime::now_utc();
         let retry_cutoff = now - retry_after;
 
         // Claim respecting retry_after
-        sqlx::query(
+        Ok(sqlx::query(
             "UPDATE payment_schedules
              SET status = 'processing', updated_at = ?, version = version + 1
              WHERE next_due_at <= ? AND (status = 'idle' OR (status = 'processing' AND updated_at <= ?))
@@ -96,20 +130,28 @@ impl PaymentScheduleRepository for SqlitePaymentScheduleRepository {
         .bind(retry_cutoff)
         .fetch_all(&self.pool)
         .await
-        .expect("failed to claim due payment schedules")
+        .map_err(|sqlx_err| {
+            tracing::error!(%sqlx_err, "unexpected sqlx error");
+            PaymentScheduleError::Persistence
+        })?
         .iter()
         .filter_map(row_to_schedule)
-        .collect()
+        .collect())
     }
 
-    async fn find_all(&self) -> Vec<PaymentSchedule> {
-        sqlx::query("SELECT * FROM payment_schedules ORDER BY created_at")
-            .fetch_all(&self.pool)
-            .await
-            .expect("failed to query payment schedules")
-            .iter()
-            .filter_map(row_to_schedule)
-            .collect()
+    async fn find_all(&self) -> Result<Vec<PaymentSchedule>, PaymentScheduleError> {
+        Ok(
+            sqlx::query("SELECT * FROM payment_schedules ORDER BY created_at")
+                .fetch_all(&self.pool)
+                .await
+                .map_err(|sqlx_err| {
+                    tracing::error!(%sqlx_err, "unexpected sqlx error");
+                    PaymentScheduleError::Persistence
+                })?
+                .iter()
+                .filter_map(row_to_schedule)
+                .collect(),
+        )
     }
 }
 
@@ -190,12 +232,42 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn claim_due_claims_an_idle_schedule_and_flips_it_to_processing() {
+    async fn create_returns_the_created_schedule() {
+        // given
         let repo = repo().await;
-        let schedule = repo.create(idle_schedule()).await;
+        let schedule = idle_schedule();
 
-        let claimed = repo.claim_due(SignedDuration::minutes(30)).await;
+        // when
+        let created = repo.create(schedule.clone()).await.unwrap();
 
+        // then
+        assert_eq!(created, schedule);
+    }
+
+    #[tokio::test]
+    async fn create_rejects_a_duplicate_id() {
+        // given
+        let repo = repo().await;
+        let schedule = idle_schedule();
+        repo.create(schedule.clone()).await.unwrap();
+
+        // when
+        let err = repo.create(schedule).await.unwrap_err();
+
+        // then
+        assert!(matches!(err, PaymentScheduleError::AlreadyExists));
+    }
+
+    #[tokio::test]
+    async fn claim_due_claims_an_idle_schedule_and_flips_it_to_processing() {
+        // given
+        let repo = repo().await;
+        let schedule = repo.create(idle_schedule()).await.unwrap();
+
+        // when
+        let claimed = repo.claim_due(SignedDuration::minutes(30)).await.unwrap();
+
+        // then
         assert_eq!(claimed.len(), 1);
         assert_eq!(claimed[0].id, schedule.id);
         assert_eq!(claimed[0].status, PaymentScheduleStatus::Processing);
@@ -204,94 +276,129 @@ mod tests {
 
     #[tokio::test]
     async fn claim_due_skips_a_freshly_claimed_processing_schedule() {
+        // given
         let repo = repo().await;
-        repo.create(idle_schedule()).await;
-        repo.claim_due(SignedDuration::minutes(30)).await;
+        repo.create(idle_schedule()).await.unwrap();
+        repo.claim_due(SignedDuration::minutes(30)).await.unwrap();
 
-        let second = repo.claim_due(SignedDuration::minutes(30)).await;
+        // when
+        let second = repo.claim_due(SignedDuration::minutes(30)).await.unwrap();
 
+        // then
         assert!(second.is_empty());
     }
 
     #[tokio::test]
     async fn claim_due_skips_an_idle_schedule_that_is_not_yet_due() {
+        // given
         let repo = repo().await;
         let mut seed = idle_schedule();
         // pushed 60 days out, so next_due_at is well past today regardless of which
         // day of the month this test runs on.
         seed.next_due_at += time::Duration::days(60);
-        repo.create(seed).await;
+        repo.create(seed).await.unwrap();
 
-        let claimed = repo.claim_due(SignedDuration::minutes(30)).await;
+        // when
+        let claimed = repo.claim_due(SignedDuration::minutes(30)).await.unwrap();
 
+        // then
         assert!(claimed.is_empty());
     }
 
     #[tokio::test]
     async fn claim_due_reclaims_a_stale_processing_schedule() {
+        // given
         let repo = repo().await;
-        repo.create(idle_schedule()).await;
-        repo.claim_due(SignedDuration::minutes(30)).await;
+        repo.create(idle_schedule()).await.unwrap();
+        repo.claim_due(SignedDuration::minutes(30)).await.unwrap();
 
-        let reclaimed = repo.claim_due(SignedDuration::seconds(0)).await;
+        // when
+        let reclaimed = repo.claim_due(SignedDuration::seconds(0)).await.unwrap();
 
+        // then
         assert_eq!(reclaimed.len(), 1);
     }
 
     #[tokio::test]
     async fn update_persists_changes_and_bumps_version() {
+        // given
         let repo = repo().await;
-        let schedule = repo.create(idle_schedule()).await;
+        let schedule = repo.create(idle_schedule()).await.unwrap();
         let mut next = schedule.clone();
         next.status = PaymentScheduleStatus::Processing;
         next.advance_due_date();
 
-        let updated = repo.update(next.clone()).await;
+        // when
+        let updated = repo.update(next.clone()).await.unwrap();
 
+        // then
         assert_eq!(updated.version, schedule.version.next());
         assert_eq!(updated.status, PaymentScheduleStatus::Processing);
         assert_eq!(updated.next_due_at, next.next_due_at);
     }
 
     #[tokio::test]
-    #[should_panic(expected = "updated concurrently or missing")]
     async fn update_rejects_a_stale_version() {
+        // given
         let repo = repo().await;
-        let schedule = repo.create(idle_schedule()).await;
-
+        let schedule = repo.create(idle_schedule()).await.unwrap();
         // simulate a concurrent writer having already advanced this schedule's version.
-        repo.update(schedule.clone()).await;
+        repo.update(schedule.clone()).await.unwrap();
 
-        repo.update(schedule).await;
+        // when
+        let err = repo.update(schedule).await.unwrap_err();
+
+        // then
+        assert!(matches!(err, PaymentScheduleError::ConcurrentUpdate));
+    }
+
+    #[tokio::test]
+    async fn update_rejects_a_missing_schedule() {
+        // given
+        let repo = repo().await;
+        let schedule = idle_schedule();
+
+        // when
+        let err = repo.update(schedule).await.unwrap_err();
+
+        // then
+        assert!(matches!(err, PaymentScheduleError::NotFound));
     }
 
     #[tokio::test]
     async fn find_all_returns_every_schedule() {
+        // given
         let repo = repo().await;
-        repo.create(idle_schedule()).await;
-        repo.create(idle_schedule()).await;
+        repo.create(idle_schedule()).await.unwrap();
+        repo.create(idle_schedule()).await.unwrap();
 
-        assert_eq!(repo.find_all().await.len(), 2);
+        // when
+        let all = repo.find_all().await.unwrap();
+
+        // then
+        assert_eq!(all.len(), 2);
     }
 
     #[tokio::test]
     async fn claim_due_lets_exactly_one_caller_win_a_race() {
+        // given
         let repo = Arc::new(repo().await);
-        repo.create(idle_schedule()).await;
+        repo.create(idle_schedule()).await.unwrap();
 
+        // when
         let mut handles = Vec::new();
         for _ in 0..8 {
             let repo = repo.clone();
             handles.push(tokio::spawn(async move {
-                repo.claim_due(SignedDuration::minutes(30)).await
+                repo.claim_due(SignedDuration::minutes(30)).await.unwrap()
             }));
         }
-
         let mut claimed_total = 0;
         for handle in handles {
             claimed_total += handle.await.unwrap().len();
         }
 
+        // then
         assert_eq!(claimed_total, 1);
     }
 }

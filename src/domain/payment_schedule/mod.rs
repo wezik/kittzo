@@ -97,10 +97,19 @@ impl PaymentSchedule {
 
 #[async_trait]
 pub trait PaymentScheduleRepository: Send + Sync {
-    async fn create(&self, schedule: PaymentSchedule) -> PaymentSchedule;
-    async fn update(&self, schedule: PaymentSchedule) -> PaymentSchedule;
-    async fn claim_due(&self, retry_after: SignedDuration) -> Vec<PaymentSchedule>;
-    async fn find_all(&self) -> Vec<PaymentSchedule>;
+    async fn create(
+        &self,
+        schedule: PaymentSchedule,
+    ) -> Result<PaymentSchedule, PaymentScheduleError>;
+    async fn update(
+        &self,
+        schedule: PaymentSchedule,
+    ) -> Result<PaymentSchedule, PaymentScheduleError>;
+    async fn claim_due(
+        &self,
+        retry_after: SignedDuration,
+    ) -> Result<Vec<PaymentSchedule>, PaymentScheduleError>;
+    async fn find_all(&self) -> Result<Vec<PaymentSchedule>, PaymentScheduleError>;
 }
 
 #[cfg(test)]

@@ -22,7 +22,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn next_increments() {
+    fn increments_correctly() {
         assert_eq!(Version::FIRST.next(), Version(2));
         assert_eq!(Version::FIRST.next().next(), Version(3));
     }

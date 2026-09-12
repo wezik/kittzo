@@ -200,42 +200,71 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn create_and_find_by_id_round_trips() {
+    async fn create_returns_the_created_payment() {
+        // given
         let repo = repo().await;
         let payment = manual_payment();
 
+        // when
         let created = repo.create(payment.clone()).await.unwrap();
-        assert_eq!(created, payment);
 
-        let found = repo.find_by_id(payment.id).await.unwrap();
-        assert_eq!(found, Some(payment));
+        // then
+        assert_eq!(created, payment);
     }
 
     #[tokio::test]
     async fn create_rejects_a_duplicate_id() {
+        // given
         let repo = repo().await;
         let payment = manual_payment();
         repo.create(payment.clone()).await.unwrap();
 
+        // when
         let err = repo.create(payment).await.unwrap_err();
+
+        // then
         assert!(matches!(err, PaymentError::AlreadyExists));
     }
 
     #[tokio::test]
-    async fn find_by_id_missing_returns_none() {
+    async fn find_by_id_returns_the_payment() {
+        // given
         let repo = repo().await;
-        assert_eq!(repo.find_by_id(Uuid::new_v4()).await.unwrap(), None);
+        let payment = manual_payment();
+        repo.create(payment.clone()).await.unwrap();
+
+        // when
+        let found = repo.find_by_id(payment.id).await.unwrap();
+
+        // then
+        assert_eq!(found, Some(payment));
+    }
+
+    #[tokio::test]
+    async fn find_by_id_missing_returns_none() {
+        // given
+        let repo = repo().await;
+
+        // when
+        let found = repo.find_by_id(Uuid::new_v4()).await.unwrap();
+
+        // then
+        assert_eq!(found, None);
     }
 
     #[tokio::test]
     async fn find_all_returns_every_payment() {
+        // given
         let repo = repo().await;
         let a = manual_payment();
         let b = manual_payment();
         repo.create(a.clone()).await.unwrap();
         repo.create(b.clone()).await.unwrap();
 
+        // when
         let all = repo.find_all().await.unwrap();
+
+        // then
         assert_eq!(all.len(), 2);
         assert!(all.contains(&a));
         assert!(all.contains(&b));

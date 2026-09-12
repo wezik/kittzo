@@ -82,7 +82,7 @@ async function loadSchedules() {
 document.getElementById("payment-form").addEventListener("submit", async (e) => {
   e.preventDefault();
   const form = new FormData(e.target);
-  await fetch("/ingest", {
+  await fetch("/payments", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({

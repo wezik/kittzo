@@ -5,7 +5,7 @@ use async_trait::async_trait;
 use time::{OffsetDateTime, SignedDuration};
 
 use crate::domain::payment::{CreatePaymentCommand, PaymentService, PaymentSource};
-use crate::domain::payment_schedule::PaymentScheduleStatus;
+use crate::domain::payment_schedule::{PaymentScheduleError, PaymentScheduleStatus};
 use crate::domain::startup_task::StartupTask;
 
 use super::PaymentScheduleService;
@@ -54,14 +54,15 @@ impl PaymentScheduleJob {
         }
     }
 
-    async fn process(&self) {
+    async fn process(&self) -> Result<(), PaymentScheduleError> {
         let due_schedules = self
             .schedule_service
             .claim_due(self.config.retry_after())
-            .await;
+            .await?;
 
         if due_schedules.is_empty() {
-            return;
+            tracing::debug!("no due payment schedules to process");
+            return Ok(());
         }
 
         tracing::info!("processing payment schedules");
@@ -75,15 +76,18 @@ impl PaymentScheduleJob {
             // advancing next_due_at past each as it's produced.
             while schedule.next_due_at <= now_date {
                 let occurence_date = schedule.next_due_at;
-                let source = PaymentSource::Schedule {
-                    schedule_id: schedule.id,
-                    occurrence_date: occurence_date,
-                };
+                tracing::debug!(
+                    schedule_id = %schedule.id,
+                    occurence_date = %occurence_date,
+                    "processing due payment schedule occurrence"
+                );
 
                 let cmd = CreatePaymentCommand {
                     total: schedule.total,
-                    source: source,
-                    auto_ack: true, // scheduled payments by default dont require ack's
+                    source: PaymentSource::Schedule {
+                        schedule_id: schedule.id,
+                        occurrence_date: occurence_date,
+                    },
                 };
 
                 match self.payment_service.create(cmd).await {
@@ -98,6 +102,7 @@ impl PaymentScheduleJob {
                            "failed to create scheduled payment"
                         );
 
+                        // break to stop advancing next_due_at in case of failures
                         break;
                     }
                 }
@@ -118,6 +123,8 @@ impl PaymentScheduleJob {
             elapsed_ms = elapsed.whole_milliseconds(),
             "finished processing payment schedules"
         );
+
+        Ok(())
     }
 }
 
@@ -129,7 +136,9 @@ impl StartupTask for PaymentScheduleJob {
 
     async fn run(&self) {
         loop {
-            self.process().await;
+            if let Err(err) = self.process().await {
+                tracing::error!(%err, "failed to process payment schedules");
+            }
             tokio::time::sleep(self.config.poll_interval()).await;
         }
     }
@@ -181,7 +190,8 @@ mod tests {
                 Money::from_parts("USD", "10.99").unwrap(),
                 Recurrence::Monthly { day_of_month: 1 },
             )
-            .await;
+            .await
+            .unwrap();
         schedule_service
             .update(PaymentSchedule {
                 next_due_at: OffsetDateTime::now_utc().date(),
@@ -196,7 +206,7 @@ mod tests {
         let (job, payment_service, schedule_service) = job().await;
         let schedule = due_schedule(&schedule_service).await;
 
-        job.process().await;
+        job.process().await.unwrap();
 
         let payments = payment_service.find_all().await.unwrap();
         assert_eq!(payments.len(), 1);
@@ -211,8 +221,8 @@ mod tests {
         let (job, payment_service, schedule_service) = job().await;
         due_schedule(&schedule_service).await;
 
-        job.process().await;
-        job.process().await;
+        job.process().await.unwrap();
+        job.process().await.unwrap();
 
         assert_eq!(payment_service.find_all().await.unwrap().len(), 1);
     }
@@ -225,12 +235,13 @@ mod tests {
                 Money::from_parts("USD", "10.99").unwrap(),
                 Recurrence::Monthly { day_of_month: 1 },
             )
-            .await;
+            .await
+            .unwrap();
 
-        job.process().await;
+        job.process().await.unwrap();
 
         assert_eq!(payment_service.find_all().await.unwrap().len(), 0);
-        let schedules = schedule_service.find_all().await;
+        let schedules = schedule_service.find_all().await.unwrap();
         assert_eq!(schedules.len(), 1);
         assert_eq!(schedules[0].status, PaymentScheduleStatus::Idle);
         assert_eq!(schedules[0].version, schedule.version);
