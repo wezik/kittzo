@@ -9,6 +9,8 @@ use super::{PaymentSchedule, PaymentScheduleRepository, Recurrence};
 pub struct PaymentScheduleService {
     repo: Arc<dyn PaymentScheduleRepository>,
 }
+#[derive(Debug, thiserror::Error)]
+pub enum PaymentScheduleError {}
 
 impl PaymentScheduleService {
     pub fn new(repo: Arc<dyn PaymentScheduleRepository>) -> Self {
@@ -30,9 +32,13 @@ impl PaymentScheduleService {
         self.repo.claim_due(retry_after).await
     }
 
-    pub async fn update(&self, schedule: PaymentSchedule) -> PaymentSchedule {
+    pub async fn update(
+        &self,
+        schedule: PaymentSchedule,
+    ) -> Result<PaymentSchedule, PaymentScheduleError> {
+        // TODO: Error handling
         let updated = self.repo.update(schedule).await;
         tracing::info!(schedule_id = %updated.id, "updated payment schedule");
-        updated
+        Ok(updated)
     }
 }

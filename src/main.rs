@@ -6,14 +6,16 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
 use api::AppState;
-use domain::confirmation::{ConfirmationRepository, ConfirmationService};
+use domain::confirmation::{
+    ConfirmationReconcileJob, ConfirmationRepository, ConfirmationService, Notifier,
+};
 use domain::payment::{PaymentRepository, PaymentService};
 use domain::payment_schedule::{
     PaymentScheduleJob, PaymentScheduleRepository, PaymentScheduleService,
 };
 use domain::startup_task::StartupTask;
 use infra::Config;
-use infra::notifier::LoggingNotifier;
+use infra::discord::{DiscordNotifier, DiscordReactionListener};
 use infra::persistence::sqlx_confirmation_repository::SqliteConfirmationRepository;
 use infra::persistence::sqlx_payment_repository::SqlitePaymentRepository;
 use infra::persistence::sqlx_payment_schedule_repository::SqlitePaymentScheduleRepository;
@@ -47,20 +49,46 @@ async fn serve(config: Config) {
     let schedule_repo: Arc<dyn PaymentScheduleRepository> =
         Arc::new(SqlitePaymentScheduleRepository::new(pool.clone()));
     let confirmation_repo: Arc<dyn ConfirmationRepository> =
-        Arc::new(SqliteConfirmationRepository::new(pool));
+        Arc::new(SqliteConfirmationRepository::new(pool.clone()));
 
-    let payment_service = Arc::new(PaymentService::new(payment_repo, Arc::new(LoggingNotifier)));
-    let schedule_service = Arc::new(PaymentScheduleService::new(schedule_repo));
-    let confirmation_service = Arc::new(ConfirmationService::new(
-        confirmation_repo,
-        Arc::new(LoggingNotifier),
+    let discord_enabled = !config.discord.token.is_empty();
+    let notifier: Arc<dyn Notifier> = if discord_enabled {
+        Arc::new(DiscordNotifier::new(
+            config.discord.token.clone(),
+            config.discord.channels.clone(),
+            payment_repo.clone(),
+            pool.clone(),
+        ))
+    } else {
+        tracing::warn!("no discord token configured, confirmations will only be logged");
+        Arc::new(infra::notifier::LoggingNotifier)
+    };
+
+    let confirmation_service = Arc::new(ConfirmationService::new(confirmation_repo, notifier));
+    let payment_service = Arc::new(PaymentService::new(
+        payment_repo,
+        confirmation_service.clone(),
     ));
+    let schedule_service = Arc::new(PaymentScheduleService::new(schedule_repo));
 
-    let tasks: Vec<Arc<dyn StartupTask>> = vec![Arc::new(PaymentScheduleJob::new(
-        schedule_service.clone(),
-        payment_service.clone(),
-        config.payment_schedule(),
-    ))];
+    let mut tasks: Vec<Arc<dyn StartupTask>> = vec![
+        Arc::new(PaymentScheduleJob::new(
+            schedule_service.clone(),
+            payment_service.clone(),
+            config.payment_schedule(),
+        )),
+        Arc::new(ConfirmationReconcileJob::new(
+            confirmation_service.clone(),
+            config.discord.reconcile_interval_secs,
+        )),
+    ];
+    if discord_enabled {
+        tasks.push(Arc::new(DiscordReactionListener::new(
+            config.discord.token.clone(),
+            pool,
+            confirmation_service.clone(),
+        )));
+    }
     for task in tasks {
         tokio::spawn(async move {
             tracing::info!(name = task.name(), "running startup task");

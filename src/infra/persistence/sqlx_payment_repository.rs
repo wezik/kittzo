@@ -1,14 +1,11 @@
 use async_trait::async_trait;
-use sqlx::{Row, Sqlite, SqlitePool, sqlite::SqliteRow};
+use sqlx::SqlitePool;
 use time::{Date, OffsetDateTime};
 use uuid::Uuid;
 
-use crate::domain::confirmation::Confirmation;
 use crate::domain::money::Money;
-use crate::domain::payment::{Payment, PaymentRepository, PaymentSource};
+use crate::domain::payment::{Payment, PaymentError, PaymentRepository, PaymentSource};
 use crate::domain::version::Version;
-
-use super::sqlx_confirmation_repository::insert_confirmation;
 
 pub struct SqlitePaymentRepository {
     pool: SqlitePool,
@@ -20,125 +17,175 @@ impl SqlitePaymentRepository {
     }
 }
 
+// sqlite's `Uuid` decode expects a 16-byte BLOB, but ids are stored as TEXT (`.to_string()`),
+// so `id`/`schedule_id` are decoded as `String` here and parsed by hand in `row_to_payment`.
+#[derive(sqlx::FromRow)]
+struct PaymentRow {
+    id: String,
+    version: i64,
+    total_amount: String,
+    total_currency: String,
+    created_at: OffsetDateTime,
+    source_type: String,
+    schedule_id: Option<String>,
+    occurrence_date: Option<Date>,
+}
+
 #[async_trait]
 impl PaymentRepository for SqlitePaymentRepository {
-    async fn create(
-        &self,
-        payment: Payment,
-        confirmation: Confirmation,
-    ) -> (Payment, Confirmation) {
-        let mut tx = self
-            .pool
-            .begin()
-            .await
-            .expect("failed to begin payment creation transaction");
+    async fn create(&self, payment: Payment) -> Result<Payment, PaymentError> {
+        let (source_name, schedule_id, occurrence_date) = match payment.source {
+            PaymentSource::Manual => ("manual", None, None),
+            PaymentSource::Schedule {
+                schedule_id,
+                occurrence_date,
+            } => (
+                "schedule",
+                Some(schedule_id.to_string()),
+                Some(occurrence_date),
+            ),
+        };
 
-        insert_payment(&mut *tx, &payment).await;
-        insert_confirmation(&mut *tx, &confirmation).await;
+        let row = sqlx::query_as::<_, PaymentRow>(
+            "
+            INSERT INTO payments (
+                id,
+                version,
+                total_amount,
+                total_currency,
+                created_at,
+                source_type,
+                schedule_id,
+                occurrence_date
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO NOTHING
+            RETURNING
+                id,
+                version,
+                total_amount,
+                total_currency,
+                created_at,
+                source_type,
+                schedule_id,
+                occurrence_date
+            ",
+        )
+        .bind(payment.id.to_string())
+        .bind(Version::FIRST.as_u32() as i64)
+        .bind(payment.total.amount().to_string())
+        .bind(payment.total.currency_code())
+        .bind(payment.created_at)
+        .bind(source_name)
+        .bind(schedule_id)
+        .bind(occurrence_date)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|sqlx_err| {
+            tracing::error!(%sqlx_err, "unexpected sqlx error");
+            PaymentError::Persistence
+        })?
+        .ok_or(PaymentError::AlreadyExists)?;
 
-        tx.commit()
-            .await
-            .expect("failed to commit payment creation transaction");
-
-        (payment, confirmation)
+        row_to_payment(row)
     }
 
-    async fn find_by_id(&self, id: Uuid) -> Option<Payment> {
-        sqlx::query("SELECT * FROM payments WHERE id = ?")
+    async fn find_by_id(&self, id: Uuid) -> Result<Option<Payment>, PaymentError> {
+        sqlx::query_as::<_, PaymentRow>("SELECT * FROM payments WHERE id = ?")
             .bind(id.to_string())
             .fetch_optional(&self.pool)
             .await
-            .expect("failed to query payment by id")
-            .map(|row| row_to_payment(&row))
+            .map_err(|sqlx_err| {
+                tracing::error!(%sqlx_err, "unexpected sqlx error");
+                PaymentError::Persistence
+            })?
+            .map(row_to_payment)
+            .transpose()
     }
 
-    async fn find_all(&self) -> Vec<Payment> {
-        sqlx::query("SELECT * FROM payments ORDER BY created_at")
+    async fn find_all(&self) -> Result<Vec<Payment>, PaymentError> {
+        sqlx::query_as::<_, PaymentRow>("SELECT * FROM payments ORDER BY created_at")
             .fetch_all(&self.pool)
             .await
-            .expect("failed to query payments")
-            .iter()
+            .map_err(|sqlx_err| {
+                tracing::error!(%sqlx_err, "unexpected sqlx error");
+                PaymentError::Persistence
+            })?
+            .into_iter()
             .map(row_to_payment)
             .collect()
     }
 }
 
-/// Inserts a payment row against any executor (pool or transaction), so a caller that needs
-/// the write inside a larger transaction can share this instead of duplicating the insert.
-pub(crate) async fn insert_payment<'e, E>(executor: E, payment: &Payment)
-where
-    E: sqlx::Executor<'e, Database = Sqlite>,
-{
-    let (schedule_id, occurrence_date) = schedule_source_parts(&payment.source);
-    sqlx::query(
-        "INSERT INTO payments (id, version, total, created_at, source_type, schedule_id, occurrence_date)
-         VALUES (?, ?, ?, ?, ?, ?, ?)",
-    )
-    .bind(payment.id.to_string())
-    .bind(payment.version.as_u32() as i64)
-    .bind(&payment.total)
-    .bind(payment.created_at)
-    .bind(source_type(&payment.source))
-    .bind(schedule_id)
-    .bind(occurrence_date)
-    .execute(executor)
-    .await
-    .expect("failed to insert payment");
-}
+fn row_to_payment(row: PaymentRow) -> Result<Payment, PaymentError> {
+    let id = Uuid::parse_str(&row.id).map_err(|err| {
+        tracing::error!(%err, id = %row.id, "invalid payment id uuid");
+        PaymentError::Persistence
+    })?;
+    let version = Version::from_u32(row.version as u32);
 
-pub(crate) fn source_type(source: &PaymentSource) -> &'static str {
-    match source {
-        PaymentSource::Manual => "manual",
-        PaymentSource::Schedule { .. } => "schedule",
-    }
-}
+    let amount = row.total_amount;
+    let currency = row.total_currency;
 
-pub(crate) fn schedule_source_parts(source: &PaymentSource) -> (Option<String>, Option<Date>) {
-    match source {
-        PaymentSource::Manual => (None, None),
-        PaymentSource::Schedule {
-            schedule_id,
-            occurrence_date,
-        } => (Some(schedule_id.to_string()), Some(*occurrence_date)),
-    }
-}
+    let total = Money::from_parts(&currency, &amount).map_err(|err| {
+        tracing::error!(%err, %amount, %currency, "failed to deserialize money type");
+        PaymentError::Persistence
+    })?;
 
-fn row_to_payment(row: &SqliteRow) -> Payment {
-    let id: String = row.get("id");
-    let version: i64 = row.get("version");
-    let total: Money = row.get("total");
-    let created_at: OffsetDateTime = row.get("created_at");
-    let source_type: String = row.get("source_type");
-
-    let source = match source_type.as_str() {
-        "manual" => PaymentSource::Manual,
+    let source = (match row.source_type.as_str() {
+        "manual" => Ok(PaymentSource::Manual),
         "schedule" => {
-            let schedule_id: String = row.get("schedule_id");
-            let occurrence_date: Date = row.get("occurrence_date");
-            PaymentSource::Schedule {
-                schedule_id: Uuid::parse_str(&schedule_id).expect("invalid schedule id uuid"),
-                occurrence_date,
-            }
-        }
-        other => panic!("unknown source_type in db: {other}"),
-    };
+            let schedule_id = row.schedule_id.ok_or_else(|| {
+                tracing::error!(
+                    payment_id = %id,
+                    source_type = %row.source_type,
+                    "payment has schedule source type but schedule_id is missing"
+                );
+                PaymentError::Persistence
+            })?;
+            let schedule_id = Uuid::parse_str(&schedule_id).map_err(|err| {
+                tracing::error!(%err, payment_id = %id, "invalid schedule id uuid");
+                PaymentError::Persistence
+            })?;
 
-    Payment {
-        id: Uuid::parse_str(&id).expect("invalid payment id uuid"),
-        version: Version::from_u32(version as u32),
+            let occurrence_date = row.occurrence_date.ok_or_else(|| {
+                tracing::error!(
+                    payment_id = %id,
+                    source_type = %row.source_type,
+                    "payment has schedule source type but occurence_date is missing"
+                );
+                PaymentError::Persistence
+            })?;
+
+            Ok(PaymentSource::Schedule {
+                schedule_id,
+                occurrence_date,
+            })
+        }
+
+        _ => {
+            tracing::error!(
+                payment_id = %id,
+                source_type = %row.source_type,
+                "unrecognized source type"
+            );
+            Err(PaymentError::Persistence)
+        }
+    })?;
+
+    Ok(Payment {
+        id,
+        version,
         total,
-        created_at,
+        created_at: row.created_at,
         source,
-    }
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::confirmation::ConfirmationSubject;
     use crate::infra::persistence::connect;
-    use crate::infra::persistence::sqlx_confirmation_repository::SqliteConfirmationRepository;
-    use rusty_money::iso;
 
     async fn repo() -> SqlitePaymentRepository {
         let pool = connect("sqlite::memory:").await.unwrap();
@@ -146,11 +193,10 @@ mod tests {
     }
 
     fn manual_payment() -> Payment {
-        Payment::new(Money::from_minor(1099, iso::USD), PaymentSource::Manual)
-    }
-
-    fn confirmation_for(payment: &Payment) -> Confirmation {
-        Confirmation::new(ConfirmationSubject::Payment(payment.id))
+        Payment::new(
+            Money::from_parts("USD", "10.99").unwrap(),
+            PaymentSource::Manual,
+        )
     }
 
     #[tokio::test]
@@ -158,34 +204,27 @@ mod tests {
         let repo = repo().await;
         let payment = manual_payment();
 
-        let (created, _) = repo
-            .create(payment.clone(), confirmation_for(&payment))
-            .await;
+        let created = repo.create(payment.clone()).await.unwrap();
         assert_eq!(created, payment);
 
         let found = repo.find_by_id(payment.id).await.unwrap();
-        assert_eq!(found, payment);
+        assert_eq!(found, Some(payment));
     }
 
     #[tokio::test]
-    async fn create_also_persists_the_pending_confirmation() {
-        let pool = connect("sqlite::memory:").await.unwrap();
-        let repo = SqlitePaymentRepository::new(pool.clone());
-        let confirmation_repo = SqliteConfirmationRepository::new(pool);
+    async fn create_rejects_a_duplicate_id() {
+        let repo = repo().await;
         let payment = manual_payment();
-        let confirmation = confirmation_for(&payment);
+        repo.create(payment.clone()).await.unwrap();
 
-        repo.create(payment, confirmation.clone()).await;
-
-        use crate::domain::confirmation::ConfirmationRepository;
-        let found = confirmation_repo.find_by_id(confirmation.id).await.unwrap();
-        assert_eq!(found.subject, confirmation.subject);
+        let err = repo.create(payment).await.unwrap_err();
+        assert!(matches!(err, PaymentError::AlreadyExists));
     }
 
     #[tokio::test]
     async fn find_by_id_missing_returns_none() {
         let repo = repo().await;
-        assert_eq!(repo.find_by_id(Uuid::new_v4()).await, None);
+        assert_eq!(repo.find_by_id(Uuid::new_v4()).await.unwrap(), None);
     }
 
     #[tokio::test]
@@ -193,10 +232,10 @@ mod tests {
         let repo = repo().await;
         let a = manual_payment();
         let b = manual_payment();
-        repo.create(a.clone(), confirmation_for(&a)).await;
-        repo.create(b.clone(), confirmation_for(&b)).await;
+        repo.create(a.clone()).await.unwrap();
+        repo.create(b.clone()).await.unwrap();
 
-        let all = repo.find_all().await;
+        let all = repo.find_all().await.unwrap();
         assert_eq!(all.len(), 2);
         assert!(all.contains(&a));
         assert!(all.contains(&b));

@@ -1,5 +1,6 @@
 /target
 /kittzo.db*
+/kittzo.toml
 
 # not reviewed / no defined shape for project docs yet, local-only for now
 /CLAUDE.md

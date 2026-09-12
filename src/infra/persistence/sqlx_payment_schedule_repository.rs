@@ -3,11 +3,12 @@ use sqlx::{Row, SqlitePool, sqlite::SqliteRow};
 use time::{Date, OffsetDateTime, SignedDuration};
 use uuid::Uuid;
 
-use crate::domain::money::Money;
 use crate::domain::payment_schedule::{
     PaymentSchedule, PaymentScheduleRepository, PaymentScheduleStatus, Recurrence,
 };
 use crate::domain::version::Version;
+
+use super::total_from_row;
 
 pub struct SqlitePaymentScheduleRepository {
     pool: SqlitePool,
@@ -24,14 +25,15 @@ impl PaymentScheduleRepository for SqlitePaymentScheduleRepository {
     async fn create(&self, schedule: PaymentSchedule) -> PaymentSchedule {
         sqlx::query(
             "INSERT INTO payment_schedules
-             (id, version, created_at, updated_at, total, recurrence_type, day_of_month, status, next_due_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+             (id, version, created_at, updated_at, total_amount, total_currency, recurrence_type, day_of_month, status, next_due_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(schedule.id.to_string())
         .bind(schedule.version.as_u32() as i64)
         .bind(schedule.created_at)
         .bind(schedule.updated_at)
-        .bind(&schedule.total)
+        .bind(schedule.total.amount().to_string())
+        .bind(schedule.total.currency_code())
         .bind(recurrence_type(&schedule.recurrence))
         .bind(day_of_month(&schedule.recurrence) as i64)
         .bind(status_str(schedule.status))
@@ -45,9 +47,27 @@ impl PaymentScheduleRepository for SqlitePaymentScheduleRepository {
 
     async fn update(&self, schedule: PaymentSchedule) -> PaymentSchedule {
         let next_version = schedule.version.next();
-        let rows_affected = update_schedule_row(&self.pool, &schedule, next_version).await;
 
-        if rows_affected == 0 {
+        let result = sqlx::query(
+            "UPDATE payment_schedules
+             SET version = ?, updated_at = ?, total_amount = ?, total_currency = ?, recurrence_type = ?, day_of_month = ?, status = ?, next_due_at = ?
+             WHERE id = ? AND version = ?",
+        )
+        .bind(next_version.as_u32() as i64)
+        .bind(schedule.updated_at)
+        .bind(schedule.total.amount().to_string())
+        .bind(schedule.total.currency_code())
+        .bind(recurrence_type(&schedule.recurrence))
+        .bind(day_of_month(&schedule.recurrence) as i64)
+        .bind(status_str(schedule.status))
+        .bind(schedule.next_due_at)
+        .bind(schedule.id.to_string())
+        .bind(schedule.version.as_u32() as i64)
+        .execute(&self.pool)
+        .await
+        .expect("failed to update payment schedule");
+
+        if result.rows_affected() == 0 {
             panic!(
                 "payment schedule {} updated concurrently or missing",
                 schedule.id
@@ -78,7 +98,7 @@ impl PaymentScheduleRepository for SqlitePaymentScheduleRepository {
         .await
         .expect("failed to claim due payment schedules")
         .iter()
-        .map(row_to_schedule)
+        .filter_map(row_to_schedule)
         .collect()
     }
 
@@ -88,36 +108,9 @@ impl PaymentScheduleRepository for SqlitePaymentScheduleRepository {
             .await
             .expect("failed to query payment schedules")
             .iter()
-            .map(row_to_schedule)
+            .filter_map(row_to_schedule)
             .collect()
     }
-}
-
-/// Updates a schedule row against the pool. Returns rows affected, letting the caller decide
-/// how to react to a lost optimistic-concurrency race.
-async fn update_schedule_row(
-    pool: &SqlitePool,
-    schedule: &PaymentSchedule,
-    next_version: Version,
-) -> u64 {
-    sqlx::query(
-        "UPDATE payment_schedules
-         SET version = ?, updated_at = ?, total = ?, recurrence_type = ?, day_of_month = ?, status = ?, next_due_at = ?
-         WHERE id = ? AND version = ?",
-    )
-    .bind(next_version.as_u32() as i64)
-    .bind(schedule.updated_at)
-    .bind(&schedule.total)
-    .bind(recurrence_type(&schedule.recurrence))
-    .bind(day_of_month(&schedule.recurrence) as i64)
-    .bind(status_str(schedule.status))
-    .bind(schedule.next_due_at)
-    .bind(schedule.id.to_string())
-    .bind(schedule.version.as_u32() as i64)
-    .execute(pool)
-    .await
-    .expect("failed to update payment schedule")
-    .rows_affected()
 }
 
 fn recurrence_type(recurrence: &Recurrence) -> &'static str {
@@ -139,12 +132,12 @@ fn status_str(status: PaymentScheduleStatus) -> &'static str {
     }
 }
 
-fn row_to_schedule(row: &SqliteRow) -> PaymentSchedule {
+fn row_to_schedule(row: &SqliteRow) -> Option<PaymentSchedule> {
     let id: String = row.get("id");
     let version: i64 = row.get("version");
     let created_at: OffsetDateTime = row.get("created_at");
     let updated_at: OffsetDateTime = row.get("updated_at");
-    let total: Money = row.get("total");
+    let total = total_from_row(row)?;
     let recurrence_type: String = row.get("recurrence_type");
     let day_of_month: i64 = row.get("day_of_month");
     let status: String = row.get("status");
@@ -157,7 +150,7 @@ fn row_to_schedule(row: &SqliteRow) -> PaymentSchedule {
         other => panic!("unknown recurrence_type in db: {other}"),
     };
 
-    PaymentSchedule {
+    Some(PaymentSchedule {
         id: Uuid::parse_str(&id).expect("invalid payment schedule id uuid"),
         version: Version::from_u32(version as u32),
         created_at,
@@ -170,14 +163,14 @@ fn row_to_schedule(row: &SqliteRow) -> PaymentSchedule {
             other => panic!("unknown status in db: {other}"),
         },
         next_due_at,
-    }
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::money::Money;
     use crate::infra::persistence::connect;
-    use rusty_money::iso;
     use std::sync::Arc;
 
     async fn repo() -> SqlitePaymentScheduleRepository {
@@ -189,7 +182,7 @@ mod tests {
     // month or next), so backdate it directly to get a fixture that's due right now.
     fn idle_schedule() -> PaymentSchedule {
         let mut schedule = PaymentSchedule::new(
-            Money::from_minor(1099, iso::USD),
+            Money::from_parts("USD", "10.99").unwrap(),
             Recurrence::Monthly { day_of_month: 1 },
         );
         schedule.next_due_at = OffsetDateTime::now_utc().date();

@@ -4,53 +4,278 @@
 <meta charset="utf-8" />
 <title>kittzo</title>
 <style>
-  body { font-family: system-ui, sans-serif; max-width: 720px; margin: 2rem auto; padding: 0 1rem; }
-  h1 { font-size: 1.25rem; }
-  section { margin-bottom: 2.5rem; }
-  form { display: flex; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 1rem; }
-  input { padding: 0.3rem; }
-  table { border-collapse: collapse; width: 100%; }
-  th, td { text-align: left; padding: 0.3rem 0.6rem; border-bottom: 1px solid #ddd; font-size: 0.9rem; }
-  button { padding: 0.3rem 0.8rem; }
+  :root {
+    --bg: #fdfdfc;
+    --text: #111;
+    --muted: #8a8a8a;
+    --border: #e3e3e0;
+    --border-soft: #eeeeec;
+    --accent: #1f6f5c;
+    --danger: #a3392c;
+    --pending: #a5690a;
+    --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--font);
+    font-size: 14px;
+    line-height: 1.5;
+  }
+
+  .page {
+    max-width: 880px;
+    margin: 0 auto;
+    padding: 2.5rem 1.5rem 5rem;
+  }
+
+  .site-header {
+    display: flex;
+    align-items: baseline;
+    gap: 0.75em;
+    flex-wrap: wrap;
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 1.25em;
+    margin-bottom: 2.5em;
+  }
+
+  .site-header h1 {
+    font-size: 22px;
+    font-weight: 800;
+    letter-spacing: -0.02em;
+    margin: 0;
+  }
+
+  .tagline {
+    margin: 0;
+    font-size: 13px;
+    color: var(--muted);
+  }
+
+  .panel { margin-bottom: 3em; }
+
+  .panel-header {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    border-bottom: 1px solid var(--border-soft);
+    padding-bottom: 0.6em;
+    margin-bottom: 1.1em;
+  }
+
+  .panel-header h2 {
+    font-size: 13px;
+    font-weight: 700;
+    letter-spacing: 0.03em;
+    text-transform: uppercase;
+    color: #333;
+    margin: 0;
+  }
+
+  .confirmation-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1em;
+    flex-wrap: wrap;
+    padding: 0.8em 0;
+    border-bottom: 1px solid var(--border-soft);
+  }
+
+  .confirmation-row:last-child { border-bottom: 0; }
+
+  .confirmation-meta { min-width: 0; }
+
+  .confirmation-subject {
+    font-size: 14px;
+    font-weight: 600;
+  }
+
+  .confirmation-time {
+    font-size: 11px;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    margin-top: 0.2em;
+  }
+
+  .confirmation-actions {
+    display: flex;
+    gap: 0.5em;
+    flex-shrink: 0;
+  }
+
+  .empty-state {
+    color: var(--muted);
+    font-size: 13px;
+    font-style: italic;
+    padding: 0.5em 0;
+    margin: 0;
+  }
+
+  .inline-form {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-end;
+    gap: 1.25em;
+    margin-bottom: 1.5em;
+  }
+
+  .inline-form label {
+    display: flex;
+    flex-direction: column;
+    gap: 0.35em;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--muted);
+  }
+
+  .inline-form input {
+    font-family: inherit;
+    font-size: 14px;
+    color: var(--text);
+    border: 0;
+    border-bottom: 1px solid var(--border);
+    background: transparent;
+    padding: 0.3em 0.1em;
+    min-width: 8em;
+  }
+
+  .inline-form input:focus {
+    outline: none;
+    border-bottom-color: var(--accent);
+  }
+
+  button {
+    font-family: inherit;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.03em;
+    text-transform: uppercase;
+    padding: 0.55em 1em;
+    border: 1px solid var(--text);
+    border-radius: 0;
+    background: transparent;
+    color: var(--text);
+    cursor: pointer;
+  }
+
+  button:hover { background: var(--text); color: #fff; }
+
+  button[data-approved="true"], .inline-form button[type="submit"] {
+    border-color: var(--accent);
+    color: var(--accent);
+  }
+  button[data-approved="true"]:hover, .inline-form button[type="submit"]:hover {
+    background: var(--accent);
+    color: #fff;
+  }
+
+  button[data-approved="false"] {
+    border-color: var(--danger);
+    color: var(--danger);
+  }
+  button[data-approved="false"]:hover {
+    background: var(--danger);
+    color: #fff;
+  }
+
+  .table-scroll { overflow-x: auto; }
+
+  table { width: 100%; border-collapse: collapse; }
+
+  th {
+    text-align: left;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--muted);
+    padding: 0 0.6em 0.6em 0;
+    border-bottom: 1px solid var(--border);
+    white-space: nowrap;
+  }
+
+  td {
+    padding: 0.65em 0.6em 0.65em 0;
+    border-bottom: 1px solid var(--border-soft);
+    font-size: 13.5px;
+    white-space: nowrap;
+  }
+
+  th:first-child, td:first-child { padding-left: 0; }
+
+  td.amount, th.amount { font-variant-numeric: tabular-nums; }
+
+  .state-queued, .state-awaiting { color: var(--pending); }
+  .state-approved { color: var(--accent); }
+  .state-rejected { color: var(--danger); }
+
+  @media (max-width: 480px) {
+    .page { padding: 1.5rem 1rem 4rem; }
+    .inline-form { gap: 0.75em; }
+    .inline-form input { min-width: 6em; }
+  }
 </style>
 </head>
 <body>
-  <h1>kittzo</h1>
+  <div class="page">
+    <header class="site-header">
+      <h1>kittzo</h1>
+      <p class="tagline">payments &amp; confirmations</p>
+    </header>
 
-  <section>
-    <h2>Pending confirmations</h2>
-    <table>
-      <thead><tr><th>Subject</th><th>Requested</th><th></th></tr></thead>
-      <tbody id="confirmations-body"></tbody>
-    </table>
-  </section>
+    <section class="panel">
+      <div class="panel-header">
+        <h2>Pending confirmations</h2>
+      </div>
+      <div id="confirmations-body"></div>
+      <p class="empty-state" id="confirmations-empty" hidden>Nothing waiting on you.</p>
+    </section>
 
-  <section>
-    <h2>Ingest payment</h2>
-    <form id="payment-form">
-      <input name="amount" placeholder="19.99" required />
-      <input name="currency" placeholder="USD" value="USD" required />
-      <button type="submit">Ingest</button>
-    </form>
-    <table>
-      <thead><tr><th>Amount</th><th>Source</th><th>State</th><th>Created</th></tr></thead>
-      <tbody id="payments-body"></tbody>
-    </table>
-  </section>
+    <section class="panel">
+      <div class="panel-header">
+        <h2>Payments</h2>
+      </div>
+      <form id="payment-form" class="inline-form">
+        <label>Amount<input name="amount" placeholder="19.99" required /></label>
+        <label>Currency<input name="currency" placeholder="USD" value="USD" required /></label>
+        <button type="submit">Ingest</button>
+      </form>
+      <div class="table-scroll">
+        <table>
+          <thead><tr><th class="amount">Amount</th><th>Source</th><th>State</th><th>Created</th></tr></thead>
+          <tbody id="payments-body"></tbody>
+        </table>
+      </div>
+      <p class="empty-state" id="payments-empty" hidden>No payments yet.</p>
+    </section>
 
-  <section>
-    <h2>Payment schedules</h2>
-    <form id="schedule-form">
-      <input name="amount" placeholder="19.99" required />
-      <input name="currency" placeholder="USD" value="USD" required />
-      <input name="day_of_month" type="number" min="1" max="31" placeholder="day" required />
-      <button type="submit">Create</button>
-    </form>
-    <table>
-      <thead><tr><th>Amount</th><th>Recurrence</th><th>Status</th><th>Next due</th></tr></thead>
-      <tbody id="schedules-body"></tbody>
-    </table>
-  </section>
+    <section class="panel">
+      <div class="panel-header">
+        <h2>Payment schedules</h2>
+      </div>
+      <form id="schedule-form" class="inline-form">
+        <label>Amount<input name="amount" placeholder="19.99" required /></label>
+        <label>Currency<input name="currency" placeholder="USD" value="USD" required /></label>
+        <label>Day of month<input name="day_of_month" type="number" min="1" max="31" placeholder="1" required /></label>
+        <button type="submit">Create</button>
+      </form>
+      <div class="table-scroll">
+        <table>
+          <thead><tr><th class="amount">Amount</th><th>Recurrence</th><th>Status</th><th>Next due</th></tr></thead>
+          <tbody id="schedules-body"></tbody>
+        </table>
+      </div>
+      <p class="empty-state" id="schedules-empty" hidden>No schedules yet.</p>
+    </section>
+  </div>
 
   <script src="app.js"></script>
 </body>

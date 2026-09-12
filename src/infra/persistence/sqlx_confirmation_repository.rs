@@ -65,11 +65,12 @@ impl ConfirmationRepository for SqliteConfirmationRepository {
             .map(|row| row_to_confirmation(&row))
     }
 
-    async fn find_pending(&self) -> Vec<Confirmation> {
-        sqlx::query("SELECT * FROM confirmations WHERE state = 'pending' ORDER BY created_at")
+    async fn find_by_state(&self, state: ConfirmationState) -> Vec<Confirmation> {
+        sqlx::query("SELECT * FROM confirmations WHERE state = ? ORDER BY created_at")
+            .bind(state_str(state))
             .fetch_all(&self.pool)
             .await
-            .expect("failed to query pending confirmations")
+            .expect("failed to query confirmations by state")
             .iter()
             .map(row_to_confirmation)
             .collect()
@@ -85,9 +86,7 @@ impl ConfirmationRepository for SqliteConfirmationRepository {
     }
 }
 
-/// Inserts a confirmation row against any executor (pool or transaction), so a caller that
-/// needs the write inside a larger transaction (see `SqlitePaymentRepository::create`) can
-/// share this instead of duplicating the insert.
+// takes any executor so a caller that needs the write inside a larger transaction can share it.
 pub(crate) async fn insert_confirmation<'e, E>(executor: E, confirmation: &Confirmation)
 where
     E: sqlx::Executor<'e, Database = Sqlite>,
@@ -119,7 +118,8 @@ pub(crate) fn subject_parts(subject: &ConfirmationSubject) -> (&'static str, Str
 
 pub(crate) fn state_str(state: ConfirmationState) -> &'static str {
     match state {
-        ConfirmationState::Pending => "pending",
+        ConfirmationState::Queued => "queued",
+        ConfirmationState::Awaiting => "awaiting",
         ConfirmationState::Approved => "approved",
         ConfirmationState::Rejected => "rejected",
     }
@@ -149,7 +149,8 @@ fn row_to_confirmation(row: &SqliteRow) -> Confirmation {
         updated_at,
         subject,
         state: match state.as_str() {
-            "pending" => ConfirmationState::Pending,
+            "queued" => ConfirmationState::Queued,
+            "awaiting" => ConfirmationState::Awaiting,
             "approved" => ConfirmationState::Approved,
             "rejected" => ConfirmationState::Rejected,
             other => panic!("unknown state in db: {other}"),
@@ -161,6 +162,7 @@ fn row_to_confirmation(row: &SqliteRow) -> Confirmation {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::confirmation::CreateConfirmationCommand;
     use crate::infra::persistence::connect;
 
     async fn repo() -> SqliteConfirmationRepository {
@@ -168,17 +170,38 @@ mod tests {
         SqliteConfirmationRepository::new(pool)
     }
 
-    fn pending_confirmation() -> Confirmation {
-        Confirmation::new(ConfirmationSubject::Payment(Uuid::new_v4()))
+    async fn queued(repo: &SqliteConfirmationRepository, payment_id: Uuid) -> Confirmation {
+        let confirmation = Confirmation::new(CreateConfirmationCommand {
+            subject: ConfirmationSubject::Payment(payment_id),
+            automatic_confirmation: false,
+        });
+        insert_confirmation(&repo.pool, &confirmation).await;
+        confirmation
+    }
+
+    async fn some_queued(repo: &SqliteConfirmationRepository) -> Confirmation {
+        queued(repo, Uuid::new_v4()).await
     }
 
     #[tokio::test]
     async fn create_and_find_by_id_round_trips() {
         let repo = repo().await;
-        let confirmation = pending_confirmation();
+        let confirmation = Confirmation::new(CreateConfirmationCommand {
+            subject: ConfirmationSubject::Payment(Uuid::new_v4()),
+            automatic_confirmation: false,
+        });
 
         let created = repo.create(confirmation.clone()).await;
         assert_eq!(created, confirmation);
+
+        let found = repo.find_by_id(confirmation.id).await.unwrap();
+        assert_eq!(found, confirmation);
+    }
+
+    #[tokio::test]
+    async fn insert_and_find_by_id_round_trips() {
+        let repo = repo().await;
+        let confirmation = some_queued(&repo).await;
 
         let found = repo.find_by_id(confirmation.id).await.unwrap();
         assert_eq!(found, confirmation);
@@ -193,7 +216,7 @@ mod tests {
     #[tokio::test]
     async fn update_persists_decision_and_bumps_version() {
         let repo = repo().await;
-        let mut confirmation = repo.create(pending_confirmation()).await;
+        let mut confirmation = some_queued(&repo).await;
         confirmation.decide(true).unwrap();
 
         let updated = repo.update(confirmation.clone()).await;
@@ -207,9 +230,7 @@ mod tests {
     async fn find_by_payment_id_returns_its_confirmation() {
         let repo = repo().await;
         let payment_id = Uuid::new_v4();
-        let confirmation = repo
-            .create(Confirmation::new(ConfirmationSubject::Payment(payment_id)))
-            .await;
+        let confirmation = queued(&repo, payment_id).await;
 
         let found = repo.find_by_payment_id(payment_id).await.unwrap();
         assert_eq!(found.id, confirmation.id);
@@ -217,15 +238,22 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn find_pending_excludes_decided_confirmations() {
+    async fn find_by_state_matches_only_that_state() {
         let repo = repo().await;
-        let pending = repo.create(pending_confirmation()).await;
-        let mut decided = repo.create(pending_confirmation()).await;
-        decided.decide(false).unwrap();
+        let still_queued = some_queued(&repo).await;
+        let mut awaiting = some_queued(&repo).await;
+        awaiting.state = ConfirmationState::Awaiting;
+        let awaiting = repo.update(awaiting).await;
+        let mut decided = some_queued(&repo).await;
+        decided.decide(true).unwrap();
         repo.update(decided).await;
 
-        let result = repo.find_pending().await;
+        let result = repo.find_by_state(ConfirmationState::Queued).await;
         assert_eq!(result.len(), 1);
-        assert_eq!(result[0].id, pending.id);
+        assert_eq!(result[0].id, still_queued.id);
+
+        let result = repo.find_by_state(ConfirmationState::Awaiting).await;
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].id, awaiting.id);
     }
 }

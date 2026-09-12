@@ -8,7 +8,7 @@ use uuid::Uuid;
 
 use crate::domain::confirmation::ConfirmationState;
 use crate::domain::money::Money;
-use crate::domain::payment::{Payment, PaymentSource};
+use crate::domain::payment::{CreatePaymentCommand, Payment, PaymentError, PaymentSource};
 
 use super::AppState;
 use super::serializers::rfc3339::OffsetDateTimeDto;
@@ -51,7 +51,8 @@ async fn to_response(state: &AppState, payment: Payment) -> PaymentResponse {
         .find_by_payment_id(payment.id)
         .await
         .map(|c| match c.state {
-            ConfirmationState::Pending => "pending",
+            ConfirmationState::Queued => "queued",
+            ConfirmationState::Awaiting => "awaiting",
             ConfirmationState::Approved => "approved",
             ConfirmationState::Rejected => "rejected",
         })
@@ -86,25 +87,48 @@ async fn ingest(
     State(state): State<AppState>,
     Json(body): Json<IngestRequest>,
 ) -> impl IntoResponse {
-    let payment = state
-        .payment_service
-        .create(body.total, PaymentSource::Manual)
-        .await;
-    let response = to_response(&state, payment).await;
-    (StatusCode::CREATED, Json(response))
+    let command = CreatePaymentCommand {
+        total: body.total,
+        source: PaymentSource::Manual,
+        auto_ack: true,
+    };
+
+    match state.payment_service.create(command).await {
+        Ok(payment) => {
+            let response = to_response(&state, payment).await;
+            (StatusCode::CREATED, Json(response)).into_response()
+        }
+        Err(PaymentError::AlreadyExists) => StatusCode::CONFLICT.into_response(),
+        Err(err) => {
+            tracing::error!(%err, "failed to create payment");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+    }
 }
 
 async fn list(State(state): State<AppState>) -> impl IntoResponse {
-    let mut payments = Vec::new();
-    for payment in state.payment_service.find_all().await {
-        payments.push(to_response(&state, payment).await);
+    let payments = match state.payment_service.find_all().await {
+        Ok(payments) => payments,
+        Err(err) => {
+            tracing::error!(%err, "failed to list payments");
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
+    };
+
+    let mut responses = Vec::new();
+    for payment in payments {
+        responses.push(to_response(&state, payment).await);
     }
-    Json(payments)
+    Json(responses).into_response()
 }
 
 async fn find_by_id(State(state): State<AppState>, Path(id): Path<Uuid>) -> impl IntoResponse {
     match state.payment_service.find_by_id(id).await {
-        Some(payment) => Json(to_response(&state, payment).await).into_response(),
-        None => StatusCode::NOT_FOUND.into_response(),
+        Ok(Some(payment)) => Json(to_response(&state, payment).await).into_response(),
+        Ok(None) => StatusCode::NOT_FOUND.into_response(),
+        Err(err) => {
+            tracing::error!(%err, "failed to find payment");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
     }
 }

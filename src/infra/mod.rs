@@ -1,4 +1,5 @@
 pub mod config;
+pub mod discord;
 pub mod logging;
 pub mod notifier;
 pub mod persistence;

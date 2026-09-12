@@ -1,5 +1,5 @@
 use axum::Router;
-use axum::extract::{Path, Query, State};
+use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Json};
 use axum::routing::{get, post};
@@ -17,11 +17,6 @@ pub fn router() -> Router<AppState> {
     Router::new()
         .route("/confirmations", get(list_pending))
         .route("/confirmations/{id}/decide", post(decide))
-}
-
-#[derive(Deserialize)]
-struct ListQuery {
-    state: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -59,7 +54,8 @@ impl From<Confirmation> for ConfirmationResponse {
                 }
             },
             state: match confirmation.state {
-                ConfirmationState::Pending => "pending",
+                ConfirmationState::Queued => "queued",
+                ConfirmationState::Awaiting => "awaiting",
                 ConfirmationState::Approved => "approved",
                 ConfirmationState::Rejected => "rejected",
             },
@@ -68,17 +64,7 @@ impl From<Confirmation> for ConfirmationResponse {
     }
 }
 
-async fn list_pending(
-    State(state): State<AppState>,
-    Query(query): Query<ListQuery>,
-) -> impl IntoResponse {
-    match query.state.as_deref() {
-        None | Some("pending") => (),
-        Some(_) => {
-            return (StatusCode::BAD_REQUEST, "only ?state=pending is supported").into_response();
-        }
-    }
-
+async fn list_pending(State(state): State<AppState>) -> impl IntoResponse {
     let confirmations: Vec<ConfirmationResponse> = state
         .confirmation_service
         .find_pending()
@@ -86,7 +72,7 @@ async fn list_pending(
         .into_iter()
         .map(ConfirmationResponse::from)
         .collect();
-    Json(confirmations).into_response()
+    Json(confirmations)
 }
 
 async fn decide(

@@ -1,4 +1,5 @@
 use serde::Deserialize;
+use std::collections::HashMap;
 use std::path::Path;
 
 use crate::domain::payment_schedule::PaymentScheduleJobConfig;
@@ -8,6 +9,7 @@ use crate::domain::payment_schedule::PaymentScheduleJobConfig;
 pub struct Config {
     pub server_port: u16,
     pub log_level: String,
+    pub discord: DiscordConfig,
     payment_schedule: TomlPaymentScheduleConfig,
 }
 
@@ -16,7 +18,29 @@ impl Default for Config {
         Self {
             server_port: 7878,
             log_level: "info".to_string(),
+            discord: DiscordConfig::default(),
             payment_schedule: TomlPaymentScheduleConfig::default(),
+        }
+    }
+}
+
+/// `channels` maps a logical channel key (e.g. "confirmations", "logs" - step 19)
+/// to the actual Discord channel id, so callers never hardcode ids.
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct DiscordConfig {
+    pub token: String,
+    pub channels: HashMap<String, String>,
+    /// Catch-up only: decisions normally arrive over the gateway within a second.
+    pub reconcile_interval_secs: u64,
+}
+
+impl Default for DiscordConfig {
+    fn default() -> Self {
+        Self {
+            token: String::new(),
+            channels: HashMap::new(),
+            reconcile_interval_secs: 300,
         }
     }
 }
@@ -49,8 +73,32 @@ impl Config {
     }
 
     fn parse(toml_str: &str) -> Config {
-        toml::from_str(toml_str).expect("invalid config")
+        toml::from_str(&substitute_env_vars(toml_str)).expect("invalid config")
     }
+}
+
+/// Expands `${VAR_NAME}` anywhere in the raw TOML text with that env var's value (empty
+/// string if unset) before parsing - lets a value like the Discord token live in
+/// `kittzo.toml` as `token = "${KITTZO_DISCORD_TOKEN}"` without hardcoding which fields
+/// support it.
+fn substitute_env_vars(input: &str) -> String {
+    let mut result = String::with_capacity(input.len());
+    let mut rest = input;
+    while let Some(start) = rest.find("${") {
+        result.push_str(&rest[..start]);
+        rest = &rest[start + 2..];
+        let Some(end) = rest.find('}') else {
+            result.push_str("${");
+            result.push_str(rest);
+            return result;
+        };
+        if let Ok(value) = std::env::var(&rest[..end]) {
+            result.push_str(&value);
+        }
+        rest = &rest[end + 1..];
+    }
+    result.push_str(rest);
+    result
 }
 
 /// Raw TOML shape for `[payment_schedule]` — kept separate from the domain
@@ -100,10 +148,34 @@ mod tests {
     }
 
     #[test]
+    fn substitutes_env_var_reference_in_toml() {
+        // SAFETY: single-threaded within this test, var name is unique to it.
+        unsafe { std::env::set_var("KITTZO_TEST_CONFIG_TOKEN", "secret123") };
+        let cfg = Config::parse("[discord]\ntoken = \"${KITTZO_TEST_CONFIG_TOKEN}\"\n");
+        unsafe { std::env::remove_var("KITTZO_TEST_CONFIG_TOKEN") };
+        assert_eq!(cfg.discord.token, "secret123");
+    }
+
+    #[test]
+    fn unset_env_var_reference_substitutes_empty_string() {
+        let cfg = Config::parse("[discord]\ntoken = \"${KITTZO_TEST_DEFINITELY_UNSET}\"\n");
+        assert_eq!(cfg.discord.token, "");
+    }
+
+    #[test]
     fn payment_schedule_section_falls_back_to_defaults_when_absent() {
         let cfg = Config::parse("server_port = 1234\n");
         assert_eq!(cfg.payment_schedule().poll_interval_secs, 3600);
         assert_eq!(cfg.payment_schedule().retry_after_secs, 1800);
+    }
+
+    #[test]
+    fn discord_section_parses_channel_routing_map() {
+        let cfg = Config::parse(
+            "[discord]\ntoken = \"abc\"\n[discord.channels]\nconfirmations = \"123\"\n",
+        );
+        assert_eq!(cfg.discord.token, "abc");
+        assert_eq!(cfg.discord.channels.get("confirmations").unwrap(), "123");
     }
 
     #[test]

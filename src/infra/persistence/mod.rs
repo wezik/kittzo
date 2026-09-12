@@ -2,7 +2,7 @@ use std::str::FromStr;
 use std::time::Duration;
 
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
-use sqlx::{Sqlite, SqlitePool};
+use sqlx::{Row, SqlitePool, sqlite::SqliteRow};
 
 use crate::domain::money::Money;
 
@@ -27,60 +27,12 @@ pub async fn connect(url: &str) -> sqlx::Result<SqlitePool> {
     Ok(pool)
 }
 
-impl sqlx::Type<Sqlite> for Money {
-    fn type_info() -> sqlx::sqlite::SqliteTypeInfo {
-        <String as sqlx::Type<Sqlite>>::type_info()
-    }
-}
-
-impl<'q> sqlx::Encode<'q, Sqlite> for Money {
-    fn encode_by_ref(
-        &self,
-        buf: &mut Vec<sqlx::sqlite::SqliteArgumentValue<'q>>,
-    ) -> Result<sqlx::encode::IsNull, sqlx::error::BoxDynError> {
-        <String as sqlx::Encode<Sqlite>>::encode(self.to_string(), buf)
-    }
-}
-
-impl<'r> sqlx::Decode<'r, Sqlite> for Money {
-    fn decode(value: sqlx::sqlite::SqliteValueRef<'r>) -> Result<Self, sqlx::error::BoxDynError> {
-        let s = <String as sqlx::Decode<Sqlite>>::decode(value)?;
-        Ok(s.parse()?)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use rusty_money::iso;
-
-    #[test]
-    fn encode_decode_money_format_round_trips() {
-        let money = Money::from_minor(1099, iso::USD);
-        let wire: String = money.to_string();
-        let decoded: Money = wire.parse().unwrap();
-        assert_eq!(decoded, money);
-    }
-
-    #[tokio::test]
-    async fn money_round_trips_through_sqlite_column() {
-        let pool = connect("sqlite::memory:").await.unwrap();
-        sqlx::query("CREATE TABLE t (amount TEXT NOT NULL)")
-            .execute(&pool)
-            .await
-            .unwrap();
-
-        let money = Money::from_minor(1099, iso::USD);
-        sqlx::query("INSERT INTO t (amount) VALUES (?)")
-            .bind(&money)
-            .execute(&pool)
-            .await
-            .unwrap();
-
-        let (decoded,): (Money,) = sqlx::query_as("SELECT amount FROM t")
-            .fetch_one(&pool)
-            .await
-            .unwrap();
-        assert_eq!(decoded, money);
-    }
+/// `None` for a row written before `Money` validated precision: the row is skipped and
+/// logged rather than crashing a request or a job loop over historical data.
+pub(crate) fn total_from_row(row: &SqliteRow) -> Option<Money> {
+    let amount: String = row.get("total_amount");
+    let currency: String = row.get("total_currency");
+    Money::from_parts(&currency, &amount)
+        .inspect_err(|err| tracing::error!(%err, "skipping row with unusable total"))
+        .ok()
 }

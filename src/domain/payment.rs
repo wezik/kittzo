@@ -4,7 +4,9 @@ use async_trait::async_trait;
 use time::{Date, OffsetDateTime};
 use uuid::Uuid;
 
-use super::confirmation::{Confirmation, ConfirmationSubject, Notifier};
+use crate::domain::confirmation::{ConfirmationError, CreateConfirmationCommand};
+
+use super::confirmation::{ConfirmationService, ConfirmationSubject};
 use super::money::Money;
 use super::version::Version;
 
@@ -38,49 +40,69 @@ impl Payment {
     }
 }
 
+#[derive(Debug, thiserror::Error)]
+pub enum PaymentError {
+    #[error("payment already exists")]
+    AlreadyExists,
+
+    #[error("failed to create ack request")]
+    FailedToCreateAckRequest(#[from] ConfirmationError),
+
+    #[error("unexpected persistence error")]
+    Persistence,
+}
+
+#[cfg_attr(test, mockall::automock)]
 #[async_trait]
 pub trait PaymentRepository: Send + Sync {
-    /// Creates the `Payment` together with the pending `Confirmation` that gates it, in one
-    /// atomic write. This is an infra implementation detail (a single `sqlx::Transaction`),
-    /// not something callers need to manage.
-    async fn create(&self, payment: Payment, confirmation: Confirmation)
-    -> (Payment, Confirmation);
-    async fn find_by_id(&self, id: Uuid) -> Option<Payment>;
-    async fn find_all(&self) -> Vec<Payment>;
+    async fn create(&self, payment: Payment) -> Result<Payment, PaymentError>;
+    async fn find_by_id(&self, id: Uuid) -> Result<Option<Payment>, PaymentError>;
+    async fn find_all(&self) -> Result<Vec<Payment>, PaymentError>;
+}
+
+pub struct CreatePaymentCommand {
+    pub total: Money,
+    pub source: PaymentSource,
+    pub auto_ack: bool,
 }
 
 pub struct PaymentService {
     repo: Arc<dyn PaymentRepository>,
-    notifier: Arc<dyn Notifier>,
+    confirmations: Arc<ConfirmationService>,
 }
 
 impl PaymentService {
-    pub fn new(repo: Arc<dyn PaymentRepository>, notifier: Arc<dyn Notifier>) -> Self {
-        Self { repo, notifier }
-    }
-
-    pub async fn create(&self, total: Money, source: PaymentSource) -> Payment {
-        let payment = Payment::new(total, source);
-        let confirmation = Confirmation::new(ConfirmationSubject::Payment(payment.id));
-        let (created, confirmation) = self.repo.create(payment, confirmation).await;
-        self.notifier.request(&confirmation).await;
-        tracing::info!(payment_id = %created.id, confirmation_id = %confirmation.id, "created payment with pending confirmation");
-        created
-    }
-
-    pub async fn create_all(&self, entries: Vec<(Money, PaymentSource)>) -> Vec<Payment> {
-        let mut created = vec![];
-        for (total, source) in entries {
-            created.push(self.create(total, source).await);
+    pub fn new(repo: Arc<dyn PaymentRepository>, confirmations: Arc<ConfirmationService>) -> Self {
+        Self {
+            repo,
+            confirmations,
         }
-        created
     }
 
-    pub async fn find_by_id(&self, id: Uuid) -> Option<Payment> {
+    pub async fn create(&self, cmd: CreatePaymentCommand) -> Result<Payment, PaymentError> {
+        let entity = Payment::new(cmd.total, cmd.source);
+        let payment = self.repo.create(entity).await?;
+
+        // SYNC CONFIRMATIONS
+        // TODO: This part is destined to be hidden behind an event / eventbus?
+        // the shape is still to be decided and the op will be performed asnchronously.
+        let confirmation_cmd = CreateConfirmationCommand {
+            subject: ConfirmationSubject::Payment(payment.id),
+            automatic_confirmation: cmd.auto_ack,
+        };
+
+        self.confirmations.create(confirmation_cmd).await?;
+        // SYNC CONFIRMATIONS
+
+        tracing::info!(payment_id = %payment.id, "created payment");
+        Ok(payment)
+    }
+
+    pub async fn find_by_id(&self, id: Uuid) -> Result<Option<Payment>, PaymentError> {
         self.repo.find_by_id(id).await
     }
 
-    pub async fn find_all(&self) -> Vec<Payment> {
+    pub async fn find_all(&self) -> Result<Vec<Payment>, PaymentError> {
         self.repo.find_all().await
     }
 }
@@ -88,49 +110,87 @@ impl PaymentService {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::infra::notifier::LoggingNotifier;
-    use crate::infra::persistence::connect;
-    use crate::infra::persistence::sqlx_payment_repository::SqlitePaymentRepository;
-    use rusty_money::iso;
+    use crate::domain::confirmation::{MockConfirmationRepository, MockNotifier};
 
-    #[test]
-    fn new_assigns_distinct_ids() {
-        let total = Money::from_minor(1, iso::USD);
-        let a = Payment::new(total.clone(), PaymentSource::Manual);
-        let b = Payment::new(total, PaymentSource::Manual);
-
-        assert_ne!(a.id, b.id);
+    fn usd(amount: &str) -> Money {
+        Money::from_parts("USD", amount).unwrap()
     }
 
-    async fn service() -> PaymentService {
-        let pool = connect("sqlite::memory:").await.unwrap();
-        PaymentService::new(
-            Arc::new(SqlitePaymentRepository::new(pool)),
-            Arc::new(LoggingNotifier),
-        )
+    fn some_payment() -> Payment {
+        Payment::new(usd("10.00"), PaymentSource::Manual)
     }
 
-    #[tokio::test]
-    async fn create_with_manual_source_returns_a_payment() {
-        let service = service().await;
-        let payment = service
-            .create(Money::from_minor(500, iso::USD), PaymentSource::Manual)
-            .await;
+    fn service(repo: MockPaymentRepository) -> PaymentService {
+        // So far mocked directly in here, but in the desired shape confirmations
+        // are sent to the outbound through an event layer, which would get mocked.
+        let mut confirmation_repo = MockConfirmationRepository::new();
+        confirmation_repo
+            .expect_create()
+            .returning(|confirmation| confirmation);
 
-        assert_eq!(payment.source, PaymentSource::Manual);
-        assert_eq!(service.find_by_id(payment.id).await, Some(payment));
+        let confirmations = Arc::new(ConfirmationService::new(
+            Arc::new(confirmation_repo),
+            Arc::new(MockNotifier::new()),
+        ));
+        PaymentService::new(Arc::new(repo), confirmations)
     }
 
     #[tokio::test]
-    async fn find_all_returns_every_created_payment() {
-        let service = service().await;
-        service
-            .create(Money::from_minor(100, iso::USD), PaymentSource::Manual)
-            .await;
-        service
-            .create(Money::from_minor(200, iso::USD), PaymentSource::Manual)
-            .await;
+    async fn create_returns_the_created_payment() {
+        // given
+        let expected = some_payment();
+        let returned = expected.clone();
+        let mut repo = MockPaymentRepository::new();
+        repo.expect_create()
+            .returning(move |_| Ok(returned.clone()));
 
-        assert_eq!(service.find_all().await.len(), 2);
+        // when
+        let payment = service(repo)
+            .create(CreatePaymentCommand {
+                total: usd("5.00"),
+                source: PaymentSource::Manual,
+                auto_ack: true,
+            })
+            .await
+            .unwrap();
+
+        // then
+        assert_eq!(payment.id, expected.id);
+        assert_eq!(payment.source, expected.source);
+    }
+
+    #[tokio::test]
+    async fn find_by_id_returns_payment() {
+        // given
+        let expected = some_payment();
+        let returned = expected.clone();
+        let mut repo = MockPaymentRepository::new();
+        repo.expect_find_by_id()
+            .returning(move |_| Ok(Some(returned.clone())));
+
+        // when
+        let payment = service(repo).find_by_id(expected.id).await.unwrap();
+
+        // then
+        assert_eq!(payment.unwrap().id, expected.id);
+    }
+
+    #[tokio::test]
+    async fn find_all_returns_all_payments() {
+        // given
+        let expected = vec![some_payment(), some_payment()];
+
+        let mut repo = MockPaymentRepository::new();
+        let returned = expected.clone();
+        repo.expect_find_all()
+            .returning(move || Ok(returned.clone()));
+
+        // when
+        let payments = service(repo).find_all().await.unwrap();
+
+        // then
+        assert_eq!(payments.len(), 2);
+        assert_eq!(payments[0].id, expected[0].id);
+        assert_eq!(payments[1].id, expected[1].id);
     }
 }

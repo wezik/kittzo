@@ -13,15 +13,20 @@ serde = { version = "1", features = ["derive"] }
 toml = "0.9"
 rusty-money = { version = "0.5.0", features = ["serde"] }
 rust_decimal = "1.43"
-sqlx = { version = "0.8", features = ["sqlite", "runtime-tokio", "migrate", "time"] }
+sqlx = { version = "0.8", features = ["sqlite", "runtime-tokio", "migrate", "time", "uuid"] }
 uuid = { version = "1.26.1", features = ["serde", "v4"] }
 time = { version = "0.3.55", features = ["serde", "std", "formatting"] }
 async-trait = "0.1.92"
 tray-icon = "0.24.2"
 tao = "0.37.0"
 image = { version = "0.25.10", default-features = false, features = ["png"] }
+twilight-http = "0.16"
+twilight-model = "0.16"
+twilight-gateway = "0.16"
+thiserror = "2.0.20"
 
 [dev-dependencies]
+mockall = "0.15.0"
 serde_json = "1"
 
 [build-dependencies]
