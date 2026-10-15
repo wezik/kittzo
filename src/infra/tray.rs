@@ -18,9 +18,15 @@ pub fn spawn(server_port: u16, paused: Arc<AtomicBool>) -> ! {
 
     let menu = Menu::new();
     let open_ui = MenuItem::with_id("open-ui", "Open UI", true, None);
+    let pay = MenuItem::with_id(
+        "pay",
+        "Run payment script",
+        cfg!(target_os = "windows"),
+        None,
+    );
     let pause_resume = MenuItem::with_id("pause-resume", "Pause", true, None);
     let quit = MenuItem::with_id("quit", "Quit", true, None);
-    menu.append_items(&[&open_ui, &pause_resume, &quit])
+    menu.append_items(&[&open_ui, &pay, &pause_resume, &quit])
         .expect("failed to build tray menu");
 
     let mut icon = Some(load_icon());
@@ -42,6 +48,9 @@ pub fn spawn(server_port: u16, paused: Arc<AtomicBool>) -> ! {
             }
             Event::UserEvent(event) if event.id == "open-ui" => {
                 open_browser(server_port);
+            }
+            Event::UserEvent(event) if event.id == "pay" => {
+                open_payment_scripts();
             }
             Event::UserEvent(event) if event.id == "pause-resume" => {
                 let now_paused = !paused.load(Ordering::SeqCst);
@@ -71,6 +80,26 @@ fn open_browser(port: u16) {
         .args(["/C", "start", "", &format!("http://127.0.0.1:{port}")])
         .spawn();
 }
+
+#[cfg(target_os = "windows")]
+fn open_payment_scripts() {
+    let _ = std::process::Command::new("cmd")
+        .args([
+            "/C",
+            "start",
+            "kittzo - payment scripts",
+            "/D",
+            "scripts",
+            "cmd",
+            "/K",
+            r".venv\Scripts\python.exe",
+            "run.py",
+        ])
+        .spawn();
+}
+
+#[cfg(target_os = "linux")]
+fn open_payment_scripts() {}
 
 #[cfg(target_os = "linux")]
 fn open_browser(port: u16) {

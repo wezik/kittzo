@@ -1,3 +1,11 @@
+const TAX_FORMS = { "VAT-7": "VAT-7", PPL: "PPE" };
+
+function escapeHtml(text) {
+  const div = document.createElement("div");
+  div.textContent = text ?? "";
+  return div.innerHTML;
+}
+
 function formatDateTime(iso) {
   return new Date(iso).toLocaleString(undefined, {
     month: "short",
@@ -7,117 +15,308 @@ function formatDateTime(iso) {
   });
 }
 
-function shortId(id) {
-  return id.slice(0, 8);
+function formatDate(isoDate) {
+  const [year, month, day] = isoDate.split("-").map(Number);
+  return new Date(year, month - 1, day).toLocaleDateString(undefined, {
+    month: "short",
+    day: "numeric",
+  });
 }
 
-async function loadConfirmations() {
-  const confirmations = await fetch("/confirmations?state=pending").then((r) => r.json());
-  document.getElementById("confirmations-empty").hidden = confirmations.length > 0;
-  document.getElementById("confirmations-body").innerHTML = confirmations
-    .map((c) => {
-      const subject =
-        c.subject.type === "payment"
-          ? `Payment <span title="${c.subject.payment_id}">${shortId(c.subject.payment_id)}</span>`
-          : c.subject.type;
-      return `<div class="confirmation-row">
-        <div class="confirmation-meta">
-          <div class="confirmation-subject">${subject}</div>
-          <div class="confirmation-time">${formatDateTime(c.created_at)}</div>
-        </div>
-        <div class="confirmation-actions">
-          <button data-id="${c.id}" data-approved="true">Approve</button>
-          <button data-id="${c.id}" data-approved="false">Reject</button>
-        </div>
-      </div>`;
-    })
-    .join("");
+// ponytail: assumes a 2-decimal currency (fine for USD/EUR/PLN, wrong for JPY) - the
+// currency's real exponent lives server-side in `Money`, not exposed over the API.
+function decimals(currency) {
+  return currency === "JPY" ? 0 : 2;
+}
+
+function formatMoney({ minor_amount, currency }) {
+  const places = decimals(currency);
+  const amount = (minor_amount / 10 ** places).toLocaleString(undefined, {
+    minimumFractionDigits: places,
+    maximumFractionDigits: places,
+  });
+  return `${amount} ${currency}`;
+}
+
+function toMinorAmount(amount, currency) {
+  return Math.round(Number(amount) * 10 ** decimals(currency));
+}
+
+function transferTitle(transfer) {
+  if (transfer.type === "tax") return TAX_FORMS[transfer.details.form_symbol];
+  return transfer.details.title;
+}
+
+function transferSubtitle(transfer) {
+  if (transfer.type === "tax") return "tax";
+  return transfer.details.recipient;
+}
+
+function gmailLink(messageId) {
+  const id = messageId.replace(/^<|>$/g, "");
+  return `https://mail.google.com/mail/u/0/#search/rfc822msgid%3A${encodeURIComponent(id)}`;
+}
+
+function sourceLabel(source) {
+  if (source.type === "SCHEDULE") return `schedule, ${formatDate(source.occurrence_date)}`;
+  if (source.type === "EMAIL") {
+    return `<a href="${escapeHtml(gmailLink(source.message_id))}" target="_blank" rel="noopener noreferrer">email</a>`;
+  }
+  return "manual";
+}
+
+function titleCell(transfer) {
+  return `<div class="cell-title">${escapeHtml(transferTitle(transfer))}</div>
+    <div class="cell-sub">${escapeHtml(transferSubtitle(transfer))}</div>`;
+}
+
+async function api(method, url, body) {
+  const res = await fetch(url, {
+    method,
+    headers: body ? { "Content-Type": "application/json" } : {},
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  if (!res.ok) {
+    alert((await res.text()) || `${method} ${url} failed with ${res.status}`);
+    return null;
+  }
+  return res.status === 204 ? true : res.json();
+}
+
+function render(id, rows, emptyId) {
+  document.getElementById(emptyId).hidden = rows.length > 0;
+  document.getElementById(id).innerHTML = rows.join("");
+}
+
+// Payments
+
+const expanded = new Set();
+let lastPayments = [];
+
+function formatAccountNumber(number) {
+  return `${number.slice(0, 2)} ${number.slice(2).match(/.{1,4}/g).join(" ")}`;
+}
+
+function statusCell(p) {
+  if (p.status === "paid") return `<span class="ok">paid</span>`;
+  if (p.ack === "pending") return `<span class="pending">awaiting approval</span>`;
+  if (p.ack === "rejected") return `<span class="muted">rejected</span>`;
+  return `unpaid <button class="primary" data-pay="${p.id}">Mark paid</button>`;
+}
+
+function recipientCell(p) {
+  if (p.type === "tax") return `<span class="muted">tax office</span>`;
+  return escapeHtml(p.details.recipient);
+}
+
+function paymentDetails(p) {
+  const rows = [
+    p.type === "standard" && ["Account number", escapeHtml(formatAccountNumber(p.details.account_number))],
+    ["Source", sourceLabel(p.source)],
+    p.paid_at && ["Paid", formatDateTime(p.paid_at)],
+    ["Created", formatDateTime(p.created_at)],
+    ["Updated", formatDateTime(p.updated_at)],
+  ].filter(Boolean);
+  return `<dl class="details">${rows.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join("")}</dl>`;
+}
+
+function renderPayments(payments) {
+  lastPayments = payments;
+  const newestFirst = [...payments].reverse();
+
+  render(
+    "confirmations-body",
+    newestFirst
+      .filter((p) => p.ack === "pending")
+      .map(
+        (p) => `<div class="confirmation-row expandable${expanded.has(p.id) ? " open" : ""}" data-toggle="${p.id}">
+          <div>
+            <div class="cell-title">${escapeHtml(transferTitle(p))} &middot; ${formatMoney(p.total)}</div>
+            <div class="cell-sub">${recipientCell(p)}</div>
+          </div>
+          <div class="actions">
+            <button class="primary" data-ack="${p.id}" data-accept="true">Approve</button>
+            <button class="danger" data-ack="${p.id}" data-accept="false">Reject</button>
+          </div>
+          ${expanded.has(p.id) ? paymentDetails(p) : ""}
+        </div>`,
+      ),
+    "confirmations-empty",
+  );
+
+  render(
+    "payments-body",
+    newestFirst.map(
+      (p) => `<tr class="expandable${expanded.has(p.id) ? " open" : ""}" data-toggle="${p.id}">
+        <td class="cell-title">${escapeHtml(transferTitle(p))}</td>
+        <td class="wrap">${recipientCell(p)}</td>
+        <td class="amount">${formatMoney(p.total)}</td>
+        <td>${statusCell(p)}</td>
+      </tr>${
+        expanded.has(p.id) ? `<tr class="detail-row"><td colspan="4">${paymentDetails(p)}</td></tr>` : ""
+      }`,
+    ),
+    "payments-empty",
+  );
+}
+
+function toggleDetails(e) {
+  if (e.target.closest("button, a, .details")) return false;
+  const row = e.target.closest("[data-toggle]");
+  if (!row) return false;
+  const id = row.dataset.toggle;
+  expanded.has(id) ? expanded.delete(id) : expanded.add(id);
+  renderPayments(lastPayments);
+  return true;
 }
 
 document.getElementById("confirmations-body").addEventListener("click", async (e) => {
-  const button = e.target.closest("button[data-id]");
+  if (toggleDetails(e)) return;
+  const button = e.target.closest("button[data-ack]");
   if (!button) return;
-  await fetch(`/confirmations/${button.dataset.id}/decide`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ approved: button.dataset.approved === "true" }),
+  await api("POST", `/payments/${button.dataset.ack}/ack`, {
+    accept: button.dataset.accept === "true",
   });
-  loadConfirmations();
-  loadPayments();
+  refresh();
 });
 
-async function loadPayments() {
-  const payments = await fetch("/payments").then((r) => r.json());
-  document.getElementById("payments-empty").hidden = payments.length > 0;
-  document.getElementById("payments-body").innerHTML = payments
-    .map((p) => {
-      const source = p.source.type === "manual" ? "manual" : `schedule (${p.source.occurrence_date})`;
-      return `<tr>
-        <td class="amount">${p.total.amount} ${p.total.currency}</td>
-        <td>${source}</td>
-        <td><span class="state-${p.confirmation_state}">${p.confirmation_state}</span></td>
-        <td>${formatDateTime(p.created_at)}</td>
-      </tr>`;
-    })
-    .join("");
+document.getElementById("payments-body").addEventListener("click", async (e) => {
+  if (toggleDetails(e)) return;
+  const button = e.target.closest("button[data-pay]");
+  if (!button) return;
+  await api("POST", `/payments/${button.dataset.pay}/pay`);
+  refresh();
+});
+
+// Schedules
+
+let schedulesById = {};
+let editingScheduleId = null;
+
+function renderSchedules(schedules) {
+  schedulesById = Object.fromEntries(schedules.map((s) => [s.id, s]));
+  render(
+    "schedules-body",
+    schedules.map(
+      (s) => `<tr>
+        <td>${titleCell(s)}</td>
+        <td class="amount">${formatMoney(s.total)}</td>
+        <td>day ${s.recurrence.day_of_month}</td>
+        <td>${formatDate(s.next_due_at)}</td>
+        <td class="actions">
+          <button data-edit="${s.id}">Edit</button>
+          <button class="danger" data-delete="${s.id}">Delete</button>
+        </td>
+      </tr>`,
+    ),
+    "schedules-empty",
+  );
 }
 
-async function loadSchedules() {
-  const schedules = await fetch("/payment-schedules").then((r) => r.json());
-  document.getElementById("schedules-empty").hidden = schedules.length > 0;
-  document.getElementById("schedules-body").innerHTML = schedules
-    .map((s) => {
-      const r = s.recurrence;
-      const recurrence = `monthly on day ${r.day_of_month}`;
-      return `<tr>
-        <td class="amount">${s.total.amount} ${s.total.currency}</td>
-        <td>${recurrence}</td>
-        <td>${s.status}</td>
-        <td>${formatDateTime(s.next_due_at)}</td>
-      </tr>`;
-    })
-    .join("");
+function setScheduleEditing(id) {
+  editingScheduleId = id;
+  const form = document.getElementById("schedule-form");
+  form.querySelector('button[type="submit"]').textContent = id ? "Save" : "Create";
+  form.querySelector('button[type="reset"]').hidden = !id;
+}
+
+function fillScheduleForm(s) {
+  const form = document.getElementById("schedule-form");
+  const fields = form.elements;
+  const places = decimals(s.total.currency);
+  fields.type.value = s.type;
+  fields.amount.value = (s.total.minor_amount / 10 ** places).toFixed(places);
+  fields.currency.value = s.total.currency;
+  fields.day_of_month.value = s.recurrence.day_of_month;
+  for (const [name, value] of Object.entries(s.details)) {
+    if (fields[name]) fields[name].value = value;
+  }
+  showKindFields(form);
+  form.scrollIntoView({ behavior: "smooth", block: "center" });
+}
+
+document.getElementById("schedules-body").addEventListener("click", async (e) => {
+  const edit = e.target.closest("button[data-edit]");
+  if (edit) {
+    fillScheduleForm(schedulesById[edit.dataset.edit]);
+    setScheduleEditing(edit.dataset.edit);
+    return;
+  }
+  const remove = e.target.closest("button[data-delete]");
+  if (!remove) return;
+  const title = transferTitle(schedulesById[remove.dataset.delete]);
+  if (!confirm(`Delete schedule "${title}"? Payments it already created stay.`)) return;
+  await api("DELETE", `/payment-schedules/${remove.dataset.delete}`);
+  refresh();
+});
+
+// Forms
+
+function showKindFields(form) {
+  const type = form.elements.type.value;
+  form.querySelectorAll("[data-kind]").forEach((label) => {
+    const active = label.dataset.kind === type;
+    label.hidden = !active;
+    label.querySelectorAll("input, select").forEach((field) => (field.disabled = !active));
+  });
+}
+
+function transferBody(form) {
+  const currency = form.get("currency");
+  const type = form.get("type");
+  const details =
+    type === "tax"
+      ? { form_symbol: form.get("form_symbol") }
+      : {
+          title: form.get("title"),
+          account_number: form.get("account_number"),
+          recipient: form.get("recipient"),
+        };
+  return {
+    total: { minor_amount: toMinorAmount(form.get("amount"), currency), currency },
+    type,
+    details,
+  };
+}
+
+for (const form of document.querySelectorAll("form")) {
+  form.elements.type.addEventListener("change", () => showKindFields(form));
+  form.addEventListener("reset", () => setTimeout(() => showKindFields(form)));
+  showKindFields(form);
 }
 
 document.getElementById("payment-form").addEventListener("submit", async (e) => {
   e.preventDefault();
-  const form = new FormData(e.target);
-  await fetch("/payments", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      total: { amount: form.get("amount"), currency: form.get("currency") },
-    }),
-  });
-  e.target.reset();
-  loadPayments();
-  loadConfirmations();
+  if (await api("POST", "/payments", transferBody(new FormData(e.target)))) e.target.reset();
+  refresh();
 });
 
 document.getElementById("schedule-form").addEventListener("submit", async (e) => {
   e.preventDefault();
   const form = new FormData(e.target);
-  await fetch("/payment-schedules", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      total: { amount: form.get("amount"), currency: form.get("currency") },
-      recurrence: {
-        type: "monthly",
-        day_of_month: Number(form.get("day_of_month")),
-      },
-    }),
-  });
-  e.target.reset();
-  loadSchedules();
+  const body = {
+    ...transferBody(form),
+    recurrence: { type: "monthly", day_of_month: Number(form.get("day_of_month")) },
+  };
+  const saved = editingScheduleId
+    ? await api("PUT", `/payment-schedules/${editingScheduleId}`, body)
+    : await api("POST", "/payment-schedules", body);
+  if (saved) e.target.reset();
+  refresh();
 });
 
-loadConfirmations();
-loadPayments();
-loadSchedules();
+document.getElementById("schedule-form").addEventListener("reset", () => setScheduleEditing(null));
 
-setInterval(() => {
-  loadConfirmations();
-  loadPayments();
-  loadSchedules();
-}, 2000);
+// Refresh
+
+async function refresh() {
+  const [payments, schedules] = await Promise.all([
+    fetch("/payments").then((r) => r.json()),
+    fetch("/payment-schedules").then((r) => r.json()),
+  ]);
+  renderPayments(payments);
+  renderSchedules(schedules);
+}
+
+refresh();
+setInterval(refresh, 2000);

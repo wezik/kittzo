@@ -2,6 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>kittzo</title>
 <style>
   :root {
@@ -88,26 +89,25 @@
 
   .confirmation-row:last-child { border-bottom: 0; }
 
-  .confirmation-meta { min-width: 0; }
+  .cell-title { font-weight: 600; }
 
-  .confirmation-subject {
-    font-size: 14px;
-    font-weight: 600;
-  }
-
-  .confirmation-time {
-    font-size: 11px;
+  .cell-sub {
+    font-size: 12px;
     color: var(--muted);
-    text-transform: uppercase;
-    letter-spacing: 0.03em;
-    margin-top: 0.2em;
+    margin-top: 0.15em;
   }
 
-  .confirmation-actions {
+  .cell-sub a, td a { color: inherit; }
+
+  .actions {
     display: flex;
     gap: 0.5em;
     flex-shrink: 0;
   }
+
+  .ok { color: var(--accent); }
+  .pending { color: var(--pending); font-weight: 600; }
+  .muted { color: var(--muted); }
 
   .empty-state {
     color: var(--muted);
@@ -125,6 +125,16 @@
     margin-bottom: 1.5em;
   }
 
+  [hidden] { display: none !important; }
+
+  .kind-fields {
+    flex-basis: 100%;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-end;
+    gap: inherit;
+  }
+
   .inline-form label {
     display: flex;
     flex-direction: column;
@@ -136,7 +146,7 @@
     color: var(--muted);
   }
 
-  .inline-form input {
+  .inline-form input, .inline-form select {
     font-family: inherit;
     font-size: 14px;
     color: var(--text);
@@ -147,7 +157,7 @@
     min-width: 8em;
   }
 
-  .inline-form input:focus {
+  .inline-form input:focus, .inline-form select:focus {
     outline: none;
     border-bottom-color: var(--accent);
   }
@@ -168,23 +178,26 @@
 
   button:hover { background: var(--text); color: #fff; }
 
-  button[data-approved="true"], .inline-form button[type="submit"] {
+  button.primary, .inline-form button[type="submit"] {
     border-color: var(--accent);
     color: var(--accent);
   }
-  button[data-approved="true"]:hover, .inline-form button[type="submit"]:hover {
+  button.primary:hover, .inline-form button[type="submit"]:hover {
     background: var(--accent);
     color: #fff;
   }
 
-  button[data-approved="false"] {
+  button.danger {
     border-color: var(--danger);
     color: var(--danger);
   }
-  button[data-approved="false"]:hover {
+  button.danger:hover {
     background: var(--danger);
     color: #fff;
   }
+
+  td button { font-size: 10px; padding: 0.35em 0.7em; margin-left: 0.4em; }
+  td.actions button { margin-left: 0; }
 
   .table-scroll { overflow-x: auto; }
 
@@ -207,20 +220,45 @@
     border-bottom: 1px solid var(--border-soft);
     font-size: 13.5px;
     white-space: nowrap;
+    vertical-align: top;
   }
+
+  td:first-child { white-space: normal; min-width: 14em; }
 
   th:first-child, td:first-child { padding-left: 0; }
 
-  td.amount, th.amount { font-variant-numeric: tabular-nums; }
+  td.amount, th.amount { font-variant-numeric: tabular-nums; text-align: right; padding-right: 1.5em; }
 
-  .state-queued, .state-awaiting { color: var(--pending); }
-  .state-approved { color: var(--accent); }
-  .state-rejected { color: var(--danger); }
+  .expandable { cursor: pointer; }
+  tr.expandable:hover td, .confirmation-row.expandable:hover { background: #f6f6f4; }
+  tr.expandable.open td { border-bottom-color: transparent; }
+  td.wrap { white-space: normal; }
+
+  .details {
+    flex-basis: 100%;
+    display: grid;
+    grid-template-columns: max-content 1fr;
+    gap: 0.25em 1.5em;
+    margin: 0;
+    font-size: 12.5px;
+    cursor: auto;
+  }
+  .details dt {
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--muted);
+    padding-top: 0.1em;
+  }
+  .details dd { margin: 0; font-variant-numeric: tabular-nums; white-space: normal; word-break: break-word; }
+  .details a { color: inherit; }
+  tr.detail-row td { padding: 0.2em 0 1em; }
 
   @media (max-width: 480px) {
     .page { padding: 1.5rem 1rem 4rem; }
     .inline-form { gap: 0.75em; }
-    .inline-form input { min-width: 6em; }
+    .inline-form input, .inline-form select { min-width: 6em; }
   }
 </style>
 </head>
@@ -228,12 +266,12 @@
   <div class="page">
     <header class="site-header">
       <h1>kittzo</h1>
-      <p class="tagline">payments &amp; confirmations</p>
+      <p class="tagline">payments &amp; approvals</p>
     </header>
 
     <section class="panel">
       <div class="panel-header">
-        <h2>Pending confirmations</h2>
+        <h2>Awaiting approval</h2>
       </div>
       <div id="confirmations-body"></div>
       <p class="empty-state" id="confirmations-empty" hidden>Nothing waiting on you.</p>
@@ -244,13 +282,26 @@
         <h2>Payments</h2>
       </div>
       <form id="payment-form" class="inline-form">
-        <label>Amount<input name="amount" placeholder="19.99" required /></label>
-        <label>Currency<input name="currency" placeholder="USD" value="USD" required /></label>
-        <button type="submit">Ingest</button>
+        <label>Kind<select name="type">
+          <option value="standard">Standard</option>
+          <option value="tax">Tax</option>
+        </select></label>
+        <label>Amount<input name="amount" inputmode="decimal" placeholder="19.99" required /></label>
+        <label>Currency<input name="currency" placeholder="PLN" value="PLN" required /></label>
+        <div class="kind-fields">
+          <label data-kind="standard">Title<input name="title" placeholder="ZUS" required /></label>
+          <label data-kind="standard">Account number<input name="account_number" placeholder="26 digits" required /></label>
+          <label data-kind="standard">Recipient<input name="recipient" placeholder="name and address" required /></label>
+          <label data-kind="tax" hidden>Form<select name="form_symbol">
+            <option value="VAT-7">VAT-7</option>
+            <option value="PPL">PPE</option>
+          </select></label>
+          <button type="submit">Add</button>
+        </div>
       </form>
       <div class="table-scroll">
         <table>
-          <thead><tr><th class="amount">Amount</th><th>Source</th><th>State</th><th>Created</th></tr></thead>
+          <thead><tr><th>Title</th><th>Recipient</th><th class="amount">Amount</th><th>Status</th></tr></thead>
           <tbody id="payments-body"></tbody>
         </table>
       </div>
@@ -262,14 +313,28 @@
         <h2>Payment schedules</h2>
       </div>
       <form id="schedule-form" class="inline-form">
-        <label>Amount<input name="amount" placeholder="19.99" required /></label>
-        <label>Currency<input name="currency" placeholder="USD" value="USD" required /></label>
+        <label>Kind<select name="type">
+          <option value="standard">Standard</option>
+          <option value="tax">Tax</option>
+        </select></label>
+        <label>Amount<input name="amount" inputmode="decimal" placeholder="19.99" required /></label>
+        <label>Currency<input name="currency" placeholder="PLN" value="PLN" required /></label>
         <label>Day of month<input name="day_of_month" type="number" min="1" max="31" placeholder="1" required /></label>
-        <button type="submit">Create</button>
+        <div class="kind-fields">
+          <label data-kind="standard">Title<input name="title" placeholder="Czynsz {MM}/{YYYY}" title="{MM} and {YYYY} are filled in from each due date" required /></label>
+          <label data-kind="standard">Account number<input name="account_number" placeholder="26 digits" required /></label>
+          <label data-kind="standard">Recipient<input name="recipient" placeholder="name and address" required /></label>
+          <label data-kind="tax" hidden>Form<select name="form_symbol">
+            <option value="VAT-7">VAT-7</option>
+            <option value="PPL">PPE</option>
+          </select></label>
+          <button type="submit">Create</button>
+          <button type="reset" hidden>Cancel</button>
+        </div>
       </form>
       <div class="table-scroll">
         <table>
-          <thead><tr><th class="amount">Amount</th><th>Recurrence</th><th>Status</th><th>Next due</th></tr></thead>
+          <thead><tr><th>Schedule</th><th class="amount">Amount</th><th>Monthly on</th><th>Next due</th><th></th></tr></thead>
           <tbody id="schedules-body"></tbody>
         </table>
       </div>

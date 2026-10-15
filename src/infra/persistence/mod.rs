@@ -4,11 +4,24 @@ use std::time::Duration;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use sqlx::{Row, SqlitePool, sqlite::SqliteRow};
 
-use crate::domain::money::Money;
+use serde_json::{Value, json};
 
-pub mod sqlx_confirmation_repository;
+use crate::domain::money::Money;
+use crate::domain::payment::{Details, TaxForm};
+
+pub mod sqlx_outbox_repository;
 pub mod sqlx_payment_repository;
 pub mod sqlx_payment_schedule_repository;
+pub mod sqlx_processed_email_repository;
+
+#[derive(Debug, PartialEq, thiserror::Error)]
+#[error("unexpected persistence error")]
+pub struct Error;
+
+pub(crate) fn unexpected(sqlx_err: sqlx::Error) -> Error {
+    tracing::error!(%sqlx_err, "unexpected sqlx error");
+    Error
+}
 
 // one connection avoids `SQLITE_BUSY` contention between writers.
 pub async fn connect(url: &str) -> sqlx::Result<SqlitePool> {
@@ -35,4 +48,50 @@ pub(crate) fn total_from_row(row: &SqliteRow) -> Option<Money> {
     Money::from_parts(&currency, &amount)
         .inspect_err(|err| tracing::error!(%err, "skipping row with unusable total"))
         .ok()
+}
+
+pub(crate) fn details_columns(details: &Details) -> (&'static str, String) {
+    let (kind, details) = match details {
+        Details::Standard {
+            title,
+            account_number,
+            recipient,
+        } => (
+            "standard",
+            json!({"title": title, "account_number": account_number.as_str(), "recipient": recipient}),
+        ),
+        Details::Tax { form } => ("tax", json!({"form_symbol": tax_form_str(*form)})),
+    };
+    (kind, details.to_string())
+}
+
+pub(crate) fn details_from_columns(kind: &str, details: &str) -> Result<Details, String> {
+    let details: Value = serde_json::from_str(details).map_err(|err| err.to_string())?;
+    let field = |name: &str| {
+        details[name]
+            .as_str()
+            .map(str::to_string)
+            .ok_or_else(|| format!("{kind} details missing {name}"))
+    };
+    match kind {
+        "standard" => Details::standard(
+            field("title")?,
+            field("account_number")?,
+            field("recipient")?,
+        )
+        .map_err(|err| err.to_string()),
+        "tax" => match field("form_symbol")?.as_str() {
+            "VAT-7" => Ok(Details::tax(TaxForm::Vat7)),
+            "PPL" => Ok(Details::tax(TaxForm::Ppl)),
+            other => Err(format!("unknown tax form {other}")),
+        },
+        other => Err(format!("unknown payment type {other}")),
+    }
+}
+
+fn tax_form_str(form: TaxForm) -> &'static str {
+    match form {
+        TaxForm::Vat7 => "VAT-7",
+        TaxForm::Ppl => "PPL",
+    }
 }

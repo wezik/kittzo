@@ -1,82 +1,93 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use sqlx::{Row, SqlitePool};
-use twilight_gateway::{Event, EventTypeFlags, Intents, Shard, ShardId, StreamExt};
+use tokio::sync::{Mutex, broadcast};
+use twilight_gateway::{Event as GatewayEvent, EventTypeFlags, Intents, Shard, ShardId, StreamExt};
 use twilight_http::Client;
+use twilight_http::error::ErrorType;
 use twilight_http::request::channel::reaction::RequestReactionType;
-use twilight_model::channel::message::{EmojiReactionType, Reaction};
+use twilight_model::channel::message::EmojiReactionType;
 use twilight_model::id::{
     Id,
     marker::{ChannelMarker, MessageMarker},
 };
 use uuid::Uuid;
 
-use crate::domain::confirmation::{
-    Confirmation, ConfirmationService, ConfirmationSubject, Notifier,
-};
-use crate::domain::payment::PaymentRepository;
+use crate::domain::event::{Codec, OutboxMessage};
+use crate::domain::event_bus::EventBus;
+use crate::domain::payment::{self, Ack, Error as PaymentError, Event, Payment, Source};
+use crate::domain::run::retrying;
 use crate::domain::startup_task::StartupTask;
+use crate::infra::codec::JsonCodec;
+use crate::infra::persistence::sqlx_payment_repository as payment_repo;
 
-/// Discord's own max for this endpoint. The catch-up poll only sees a confirmation whose
-/// message is still inside this window; the gateway listener covers everything else.
-const MESSAGE_FETCH_LIMIT: u16 = 100;
-
+const CONFIRMATIONS_CHANNEL: &str = "confirmations";
 const APPROVE_EMOJI: &str = "✅";
 const REJECT_EMOJI: &str = "❎";
+const DELIVERY_ATTEMPTS: usize = 3;
+/// The `retrying` attempts above are immediate; this is the actual backoff before the message
+/// is handed back to the queue for a fresh consumer poll.
+const NACK_DELAY: Duration = Duration::from_secs(30);
 
-pub struct DiscordNotifier {
-    client: Client,
-    channels: HashMap<String, String>,
-    payments: Arc<dyn PaymentRepository>,
-    pool: SqlitePool,
+#[derive(Debug, PartialEq)]
+enum Failure {
+    Retry,
+    GiveUp,
 }
 
-impl DiscordNotifier {
+pub struct DiscordConsumer {
+    client: Client,
+    channels: HashMap<String, String>,
+    pool: SqlitePool,
+    bus: Arc<dyn EventBus>,
+    receiver: Mutex<broadcast::Receiver<OutboxMessage>>,
+    nack_delay: Duration,
+}
+
+impl DiscordConsumer {
     pub fn new(
         token: String,
         channels: HashMap<String, String>,
-        payments: Arc<dyn PaymentRepository>,
         pool: SqlitePool,
+        bus: Arc<dyn EventBus>,
     ) -> Self {
+        let receiver = bus.subscribe();
         Self {
             client: Client::new(token),
             channels,
-            payments,
             pool,
+            bus,
+            receiver: Mutex::new(receiver),
+            nack_delay: NACK_DELAY,
         }
     }
 
-    fn channel_id(&self, channel_key: &str) -> Option<Id<ChannelMarker>> {
-        let raw = self.channels.get(channel_key)?;
+    fn channel_id(&self, key: &str) -> Option<Id<ChannelMarker>> {
+        let raw = self.channels.get(key)?;
         raw.parse::<u64>()
-            .inspect_err(|_| tracing::warn!(channel_key, raw, "invalid discord channel id"))
+            .inspect_err(|_| tracing::warn!(channel_key = key, raw, "invalid discord channel id"))
             .ok()
             .map(Id::new)
     }
 
-    async fn confirmation_prompt(&self, confirmation: &Confirmation) -> String {
-        let subject = match confirmation.subject {
-            ConfirmationSubject::Payment(payment_id) => {
-                match self.payments.find_by_id(payment_id).await {
-                    Ok(Some(payment)) => format!("payment of {}", payment.total),
-                    Ok(None) => "payment".to_string(),
-                    Err(err) => {
-                        tracing::error!(%err, %payment_id, "failed to look up payment");
-                        "payment".to_string()
-                    }
-                }
-            }
-        };
+    fn prompt(payment: &Payment) -> String {
+        let mut links = String::new();
+        if let Source::Email { message_id } = &payment.source {
+            links.push_str(&format!("\nEmail: {}", gmail_link(message_id)));
+        }
         format!(
-            "PLACEHOLDER_TITLE {subject} requires confirmation, click {APPROVE_EMOJI} to confirm or {REJECT_EMOJI} to reject"
+            "{}: {} requires confirmation, click {APPROVE_EMOJI} to confirm or {REJECT_EMOJI} to reject{links}",
+            payment.details.display_title(),
+            payment.total
         )
     }
 
     async fn remember_message(
         &self,
-        confirmation_id: Uuid,
+        payment_id: Uuid,
         channel_id: Id<ChannelMarker>,
         message_id: Id<MessageMarker>,
     ) -> sqlx::Result<()> {
@@ -84,7 +95,7 @@ impl DiscordNotifier {
             "INSERT OR REPLACE INTO discord_confirmation_messages
              (confirmation_id, channel_id, message_id) VALUES (?, ?, ?)",
         )
-        .bind(confirmation_id.to_string())
+        .bind(payment_id.to_string())
         .bind(channel_id.get() as i64)
         .bind(message_id.get() as i64)
         .execute(&self.pool)
@@ -94,13 +105,13 @@ impl DiscordNotifier {
 
     async fn find_message(
         &self,
-        confirmation_id: Uuid,
+        payment_id: Uuid,
     ) -> sqlx::Result<Option<(Id<ChannelMarker>, Id<MessageMarker>)>> {
         Ok(sqlx::query(
             "SELECT channel_id, message_id FROM discord_confirmation_messages
              WHERE confirmation_id = ?",
         )
-        .bind(confirmation_id.to_string())
+        .bind(payment_id.to_string())
         .fetch_optional(&self.pool)
         .await?
         .map(|row| {
@@ -110,108 +121,66 @@ impl DiscordNotifier {
         }))
     }
 
-    async fn forget_message(&self, confirmation_id: Uuid) -> sqlx::Result<()> {
+    async fn forget_message(&self, payment_id: Uuid) -> sqlx::Result<()> {
         sqlx::query("DELETE FROM discord_confirmation_messages WHERE confirmation_id = ?")
-            .bind(confirmation_id.to_string())
+            .bind(payment_id.to_string())
             .execute(&self.pool)
             .await
             .map(|_| ())
     }
 
-    async fn find_messages(
-        &self,
-        confirmation_ids: &[Uuid],
-    ) -> sqlx::Result<HashMap<Uuid, (Id<ChannelMarker>, Id<MessageMarker>)>> {
-        if confirmation_ids.is_empty() {
-            return Ok(HashMap::new());
+    async fn handle(&self, message: &OutboxMessage) -> Result<(), Failure> {
+        if !matches!(
+            message.event_type.as_str(),
+            "PAYMENT_CREATED" | "PAYMENT_ACKED"
+        ) {
+            return Ok(());
         }
-        let placeholders = vec!["?"; confirmation_ids.len()].join(",");
-        let sql = format!(
-            "SELECT confirmation_id, channel_id, message_id FROM discord_confirmation_messages
-             WHERE confirmation_id IN ({placeholders})"
-        );
-        let mut query = sqlx::query(&sql);
-        for id in confirmation_ids {
-            query = query.bind(id.to_string());
+        // a poison payload requeued forever is a payload retried forever - give up on it once,
+        // loudly, instead of wedging the queue.
+        let event: Event = JsonCodec::decode(&message.payload).map_err(|err| {
+            tracing::error!(%err, message_id = %message.id, "failed to decode outbox payload");
+            Failure::GiveUp
+        })?;
+
+        match event {
+            Event::Created { id } => self.post_prompt(id).await,
+            Event::Acked { id } => self.withdraw(id).await,
+            Event::Finished { .. } => Ok(()),
         }
-        Ok(query
-            .fetch_all(&self.pool)
-            .await?
-            .into_iter()
-            .filter_map(|row| {
-                let confirmation_id: String = row.get("confirmation_id");
-                let channel_id: i64 = row.get("channel_id");
-                let message_id: i64 = row.get("message_id");
-                Uuid::parse_str(&confirmation_id)
-                    .inspect_err(|_| {
-                        tracing::warn!(confirmation_id, "unparsable confirmation id in db")
-                    })
-                    .ok()
-                    .map(|id| (id, (Id::new(channel_id as u64), Id::new(message_id as u64))))
-            })
-            .collect())
     }
 
-    async fn recent_decisions(
-        &self,
-        channel_id: Id<ChannelMarker>,
-    ) -> HashMap<Id<MessageMarker>, bool> {
-        let messages = match self
-            .client
-            .channel_messages(channel_id)
-            .limit(MESSAGE_FETCH_LIMIT)
-            .await
-        {
-            Ok(response) => match response.model().await {
-                Ok(messages) => messages,
-                Err(err) => {
-                    tracing::warn!(%err, "failed to decode discord channel messages response");
-                    return HashMap::new();
-                }
-            },
+    async fn post_prompt(&self, payment_id: Uuid) -> Result<(), Failure> {
+        let payment = match payment_repo::find(&self.pool, payment_id).await {
+            Ok(payment) => payment,
+            Err(PaymentError::NotFound) => return Ok(()),
             Err(err) => {
-                tracing::warn!(%err, "failed to fetch discord channel messages");
-                return HashMap::new();
+                tracing::warn!(%err, %payment_id, "failed to look up payment");
+                return Err(Failure::Retry);
             }
         };
+        // acked via the UI before delivery (or acked on creation, like manual payments) -
+        // nothing left to ask, and this is also what makes out-of-order delivery against
+        // `withdraw` safe.
+        if payment.ack != Ack::Pending {
+            return Ok(());
+        }
+        // the outbox delivers at least once - a redelivered event must not post a second prompt.
+        match self.find_message(payment_id).await {
+            Ok(Some(_)) => return Ok(()),
+            Ok(None) => {}
+            Err(err) => {
+                tracing::warn!(%err, "failed to look up discord message reference");
+                return Err(Failure::Retry);
+            }
+        }
 
-        messages
-            .into_iter()
-            .filter_map(|message| {
-                decision_from_reactions(&message.reactions).map(|d| (message.id, d))
-            })
-            .collect()
-    }
-}
-
-fn decision_from_emoji(emoji: &EmojiReactionType) -> Option<bool> {
-    match emoji {
-        EmojiReactionType::Unicode { name } if name == APPROVE_EMOJI => Some(true),
-        EmojiReactionType::Unicode { name } if name == REJECT_EMOJI => Some(false),
-        _ => None,
-    }
-}
-
-/// The bot's own auto-added reaction is always one of the count, so only `count > 1` means a
-/// human reacted too. A message carrying both reactions is not an approval.
-fn decision_from_reactions(reactions: &[Reaction]) -> Option<bool> {
-    let decisions: Vec<bool> = reactions
-        .iter()
-        .filter(|reaction| reaction.count > 1)
-        .filter_map(|reaction| decision_from_emoji(&reaction.emoji))
-        .collect();
-    (!decisions.is_empty()).then(|| decisions.iter().all(|approved| *approved))
-}
-
-#[async_trait]
-impl Notifier for DiscordNotifier {
-    async fn request(&self, confirmation: &Confirmation) -> bool {
-        let Some(channel_id) = self.channel_id("confirmations") else {
-            tracing::warn!("no discord channel configured, dropping message");
-            return false;
+        let Some(channel_id) = self.channel_id(CONFIRMATIONS_CHANNEL) else {
+            tracing::warn!("no discord channel configured, will retry");
+            return Err(Failure::Retry);
         };
 
-        let content = self.confirmation_prompt(confirmation).await;
+        let content = Self::prompt(&payment);
         let message = match self
             .client
             .create_message(channel_id)
@@ -222,23 +191,29 @@ impl Notifier for DiscordNotifier {
                 Ok(message) => message,
                 Err(err) => {
                     tracing::warn!(%err, "failed to decode discord message response");
-                    return false;
+                    return Err(Failure::Retry);
                 }
             },
+            // a message Discord will never accept must not wedge the queue behind it - every
+            // other failure (rate limit, outage, transient error) is worth retrying.
+            Err(err) if matches!(err.kind(), ErrorType::Validation) => {
+                tracing::error!(%err, %payment_id, "discord rejected the prompt, giving up");
+                return Err(Failure::GiveUp);
+            }
             Err(err) => {
                 tracing::warn!(%err, "discord send failed");
-                return false;
+                return Err(Failure::Retry);
             }
         };
 
-        // without the reference the decision can never be matched back, so treat it as
-        // undelivered and let the next reconcile re-send rather than orphan the message.
+        // without the reference the decision can never be matched back, so treat it as failed
+        // and let the next attempt re-send rather than orphan the message.
         if let Err(err) = self
-            .remember_message(confirmation.id, channel_id, message.id)
+            .remember_message(payment_id, channel_id, message.id)
             .await
         {
-            tracing::error!(%err, confirmation_id = %confirmation.id, "failed to persist discord message reference");
-            return false;
+            tracing::error!(%err, %payment_id, "failed to persist discord message reference");
+            return Err(Failure::Retry);
         }
 
         for emoji in [APPROVE_EMOJI, REJECT_EMOJI] {
@@ -248,83 +223,131 @@ impl Notifier for DiscordNotifier {
                 .create_reaction(channel_id, message.id, &reaction)
                 .await
             {
+                // not retried: retrying would repost the whole message, and the listener
+                // picks up a manually-added reaction anyway.
                 tracing::warn!(%err, emoji, "failed to add reaction");
             }
         }
 
-        true
+        Ok(())
     }
 
-    async fn withdraw(&self, confirmation: &Confirmation) {
-        let reference = match self.find_message(confirmation.id).await {
+    async fn withdraw(&self, payment_id: Uuid) -> Result<(), Failure> {
+        let reference = match self.find_message(payment_id).await {
             Ok(reference) => reference,
             Err(err) => {
                 tracing::warn!(%err, "failed to look up discord message reference");
-                return;
+                return Err(Failure::Retry);
             }
         };
+        // no reference means this payment never had a prompt - e.g. acked on creation, not
+        // an error.
         let Some((channel_id, message_id)) = reference else {
-            return;
+            return Ok(());
         };
+
         if let Err(err) = self.client.delete_message(channel_id, message_id).await {
-            tracing::warn!(%err, "failed to delete discord message");
-        }
-        if let Err(err) = self.forget_message(confirmation.id).await {
-            tracing::warn!(%err, "failed to delete discord message reference");
-        }
-    }
-
-    async fn poll_decisions(&self, confirmations: &[Confirmation]) -> HashMap<Uuid, bool> {
-        let ids: Vec<Uuid> = confirmations.iter().map(|c| c.id).collect();
-        let references = match self.find_messages(&ids).await {
-            Ok(references) => references,
-            Err(err) => {
-                tracing::warn!(%err, "failed to look up discord message references");
-                return HashMap::new();
+            let already_gone = matches!(
+                err.kind(),
+                ErrorType::Response { status, .. } if status.get() == 404
+            );
+            if !already_gone {
+                tracing::warn!(%err, "failed to delete discord message");
+                return Err(Failure::Retry);
             }
-        };
-        if references.is_empty() {
-            return HashMap::new();
         }
-
-        let channels: HashSet<Id<ChannelMarker>> = references
-            .values()
-            .map(|(channel_id, _)| *channel_id)
-            .collect();
-        let mut decisions_by_message = HashMap::new();
-        for channel_id in channels {
-            decisions_by_message.extend(self.recent_decisions(channel_id).await);
+        if let Err(err) = self.forget_message(payment_id).await {
+            tracing::warn!(%err, "failed to delete discord message reference");
+            return Err(Failure::Retry);
         }
-
-        references
-            .into_iter()
-            .filter_map(|(confirmation_id, (_, message_id))| {
-                decisions_by_message
-                    .get(&message_id)
-                    .map(|&approved| (confirmation_id, approved))
-            })
-            .collect()
+        Ok(())
     }
 }
 
-/// Pushes reactions in as they happen; `ConfirmationReconcileJob` is the slow catch-up for
-/// anything missed while disconnected.
+#[async_trait]
+impl StartupTask for DiscordConsumer {
+    fn name(&self) -> &str {
+        "discord-consumer"
+    }
+
+    async fn run(&self) {
+        loop {
+            let received = self.receiver.lock().await.recv().await;
+            match received {
+                Ok(message) => self.process(message).await,
+                Err(broadcast::error::RecvError::Lagged(n)) => {
+                    tracing::warn!(n, "discord consumer lagged, some events were dropped")
+                }
+                Err(broadcast::error::RecvError::Closed) => break,
+            }
+        }
+        tracing::warn!("event bus closed");
+    }
+}
+
+impl DiscordConsumer {
+    async fn process(&self, message: OutboxMessage) {
+        let outcome = retrying(
+            DELIVERY_ATTEMPTS,
+            |failure| *failure == Failure::Retry,
+            || self.handle(&message),
+        )
+        .await;
+
+        match outcome {
+            Ok(()) | Err(Failure::GiveUp) => {}
+            Err(Failure::Retry) => {
+                tracing::error!(
+                    event_type = %message.event_type,
+                    "discord delivery failed, retrying later"
+                );
+                tokio::time::sleep(self.nack_delay).await;
+                self.bus.publish(message);
+            }
+        }
+    }
+}
+
+fn gmail_link(message_id: &str) -> String {
+    let id = message_id.trim_matches(|c| c == '<' || c == '>');
+    let encoded: String = id
+        .bytes()
+        .map(|b| match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                (b as char).to_string()
+            }
+            other => format!("%{other:02X}"),
+        })
+        .collect();
+    format!("https://mail.google.com/mail/u/0/#search/rfc822msgid%3A{encoded}")
+}
+
+fn decision_from_emoji(emoji: &EmojiReactionType) -> Option<bool> {
+    match emoji {
+        EmojiReactionType::Unicode { name } if name == APPROVE_EMOJI => Some(true),
+        EmojiReactionType::Unicode { name } if name == REJECT_EMOJI => Some(false),
+        _ => None,
+    }
+}
+
+/// Pushes reactions in as they happen; a reconcile job would be the slow catch-up for
+/// anything missed while disconnected - deliberately out of scope for now.
 pub struct DiscordReactionListener {
     token: String,
     pool: SqlitePool,
-    confirmations: Arc<ConfirmationService>,
+    payments: Arc<payment::Service>,
 }
 
 impl DiscordReactionListener {
-    pub fn new(token: String, pool: SqlitePool, confirmations: Arc<ConfirmationService>) -> Self {
+    pub fn new(token: String, pool: SqlitePool, payments: Arc<payment::Service>) -> Self {
         Self {
             token,
             pool,
-            confirmations,
+            payments,
         }
     }
 
-    async fn confirmation_id(&self, message_id: Id<MessageMarker>) -> sqlx::Result<Option<Uuid>> {
+    async fn payment_id(&self, message_id: Id<MessageMarker>) -> sqlx::Result<Option<Uuid>> {
         let row = sqlx::query(
             "SELECT confirmation_id FROM discord_confirmation_messages WHERE message_id = ?",
         )
@@ -334,7 +357,7 @@ impl DiscordReactionListener {
         Ok(row.and_then(|row| {
             let id: String = row.get("confirmation_id");
             Uuid::parse_str(&id)
-                .inspect_err(|_| tracing::warn!(id, "unparsable confirmation id in db"))
+                .inspect_err(|_| tracing::warn!(id, "unparsable payment id in db"))
                 .ok()
         }))
     }
@@ -358,7 +381,7 @@ impl StartupTask for DiscordReactionListener {
                 }
             },
             Err(err) => {
-                tracing::error!(%err, "failed to identify discord bot user, reactions will only be picked up by the reconcile job");
+                tracing::error!(%err, "failed to identify discord bot user, reactions will only be picked up by manual review");
                 return;
             }
         };
@@ -377,7 +400,7 @@ impl StartupTask for DiscordReactionListener {
                     continue;
                 }
             };
-            let Event::ReactionAdd(reaction) = event else {
+            let GatewayEvent::ReactionAdd(reaction) = event else {
                 continue;
             };
             if reaction.user_id == own_id {
@@ -386,9 +409,9 @@ impl StartupTask for DiscordReactionListener {
             let Some(approved) = decision_from_emoji(&reaction.emoji) else {
                 continue;
             };
-            match self.confirmation_id(reaction.message_id).await {
-                Ok(Some(confirmation_id)) => {
-                    let _ = self.confirmations.decide(confirmation_id, approved).await;
+            match self.payment_id(reaction.message_id).await {
+                Ok(Some(payment_id)) => {
+                    let _ = self.payments.ack(payment_id, approved).await;
                 }
                 Ok(None) => {}
                 Err(err) => tracing::warn!(%err, "failed to resolve reacted message"),
@@ -402,182 +425,154 @@ impl StartupTask for DiscordReactionListener {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::confirmation::CreateConfirmationCommand;
     use crate::domain::money::Money;
-    use crate::domain::payment::{Payment, PaymentSource};
+    use crate::domain::money::some_money;
+    use crate::domain::payment::some_standard_details;
+    use crate::domain::payment::{Details, TaxForm};
+    use crate::infra::event_bus::TokioEventBus;
     use crate::infra::persistence::connect;
-    use crate::infra::persistence::sqlx_payment_repository::SqlitePaymentRepository;
 
-    fn some_confirmation(payment_id: Uuid) -> Confirmation {
-        Confirmation::new(CreateConfirmationCommand {
-            subject: ConfirmationSubject::Payment(payment_id),
-            automatic_confirmation: false,
-        })
-    }
-
-    async fn notifier() -> DiscordNotifier {
+    async fn consumer() -> DiscordConsumer {
         let pool = connect("sqlite::memory:").await.unwrap();
-        DiscordNotifier::new(
-            String::new(),
-            HashMap::new(),
-            Arc::new(SqlitePaymentRepository::new(pool.clone())),
-            pool,
-        )
+        consumer_with(pool, Arc::new(TokioEventBus::new()))
     }
 
-    #[tokio::test]
-    async fn confirmation_prompt_includes_amount_and_currency() {
-        let notifier = notifier().await;
-        let payment = Payment::new(
+    fn email_source() -> Source {
+        Source::Email {
+            message_id: "<CAx+1@mail.gmail.com>".into(),
+        }
+    }
+
+    async fn stored(pool: &SqlitePool, source: Source) -> Payment {
+        let (payment, _) = Payment::new(some_money(), some_standard_details(), source);
+        payment_repo::create(pool, &payment).await.unwrap()
+    }
+
+    #[test]
+    fn prompt_includes_title_and_amount() {
+        let (payment, _event) = Payment::new(
             Money::from_parts("PLN", "99.99").unwrap(),
-            PaymentSource::Manual,
+            some_standard_details(),
+            Source::Manual,
         );
-        notifier.payments.create(payment.clone()).await.unwrap();
-
-        let confirmation = some_confirmation(payment.id);
-        let prompt = notifier.confirmation_prompt(&confirmation).await;
 
         assert_eq!(
-            prompt,
-            "PLACEHOLDER_TITLE payment of 99.99 PLN requires confirmation, click ✅ to confirm or ❎ to reject"
+            DiscordConsumer::prompt(&payment),
+            "foo - someone: 99.99 PLN requires confirmation, click ✅ to confirm or ❎ to reject"
         );
     }
 
-    #[tokio::test]
-    async fn confirmation_prompt_falls_back_when_payment_missing() {
-        let notifier = notifier().await;
-        let confirmation = some_confirmation(Uuid::new_v4());
-        let prompt = notifier.confirmation_prompt(&confirmation).await;
+    #[test]
+    fn prompt_links_the_email() {
+        let (payment, _event) = Payment::new(
+            Money::from_parts("PLN", "150.00").unwrap(),
+            Details::tax(TaxForm::Ppl),
+            email_source(),
+        );
 
         assert_eq!(
-            prompt,
-            "PLACEHOLDER_TITLE payment requires confirmation, click ✅ to confirm or ❎ to reject"
+            DiscordConsumer::prompt(&payment)
+                .lines()
+                .collect::<Vec<_>>(),
+            vec![
+                "PPE: 150.00 PLN requires confirmation, click ✅ to confirm or ❎ to reject",
+                "Email: https://mail.google.com/mail/u/0/#search/rfc822msgid%3ACAx%2B1%40mail.gmail.com",
+            ]
         );
     }
 
     #[tokio::test]
     async fn message_reference_round_trips_and_forgets() {
-        let notifier = notifier().await;
-        let confirmation_id = Uuid::new_v4();
+        let consumer = consumer().await;
+        let payment_id = Uuid::new_v4();
         let channel_id = Id::<ChannelMarker>::new(111);
         let message_id = Id::<MessageMarker>::new(222);
 
-        assert_eq!(notifier.find_message(confirmation_id).await.unwrap(), None);
+        assert_eq!(consumer.find_message(payment_id).await.unwrap(), None);
 
-        notifier
-            .remember_message(confirmation_id, channel_id, message_id)
+        consumer
+            .remember_message(payment_id, channel_id, message_id)
             .await
             .unwrap();
         assert_eq!(
-            notifier.find_message(confirmation_id).await.unwrap(),
+            consumer.find_message(payment_id).await.unwrap(),
             Some((channel_id, message_id))
         );
 
-        notifier.forget_message(confirmation_id).await.unwrap();
-        assert_eq!(notifier.find_message(confirmation_id).await.unwrap(), None);
+        consumer.forget_message(payment_id).await.unwrap();
+        assert_eq!(consumer.find_message(payment_id).await.unwrap(), None);
     }
 
     #[tokio::test]
-    async fn poll_decisions_returns_empty_when_no_message_is_known() {
-        let notifier = notifier().await;
-        let confirmation = some_confirmation(Uuid::new_v4());
+    async fn handle_acked_with_no_stored_reference_is_a_no_op() {
+        let consumer = consumer().await;
+        let msg = OutboxMessage::from(Event::Acked { id: Uuid::new_v4() });
 
-        assert_eq!(
-            notifier.poll_decisions(&[confirmation]).await,
-            HashMap::new()
-        );
+        assert_eq!(consumer.handle(&msg).await, Ok(()));
     }
 
     #[tokio::test]
-    async fn find_messages_batches_the_lookup_and_skips_unknown_ids() {
-        let notifier = notifier().await;
-        let known = Uuid::new_v4();
-        let unknown = Uuid::new_v4();
-        let channel_id = Id::<ChannelMarker>::new(111);
-        let message_id = Id::<MessageMarker>::new(222);
-        notifier
-            .remember_message(known, channel_id, message_id)
+    async fn handle_created_for_an_already_acked_payment_is_a_no_op() {
+        let consumer = consumer().await;
+        let payment = stored(&consumer.pool, Source::Manual).await;
+        assert_ne!(payment.ack, Ack::Pending);
+
+        let msg = OutboxMessage::from(Event::Created { id: payment.id });
+
+        assert_eq!(consumer.handle(&msg).await, Ok(()));
+    }
+
+    #[tokio::test]
+    async fn handle_redelivered_created_does_not_prompt_again() {
+        let consumer = consumer().await;
+        let payment = stored(&consumer.pool, email_source()).await;
+        consumer
+            .remember_message(payment.id, Id::new(111), Id::new(222))
             .await
             .unwrap();
 
-        let result = notifier.find_messages(&[known, unknown]).await.unwrap();
+        // no `[discord.channels]` configured, so reaching the send would be `Retry`.
+        let msg = OutboxMessage::from(Event::Created { id: payment.id });
 
-        assert_eq!(result.len(), 1);
-        assert_eq!(result.get(&known), Some(&(channel_id, message_id)));
+        assert_eq!(consumer.handle(&msg).await, Ok(()));
     }
 
     #[tokio::test]
-    async fn listener_resolves_a_message_back_to_its_confirmation() {
-        let pool = connect("sqlite::memory:").await.unwrap();
-        let notifier = DiscordNotifier::new(
-            String::new(),
-            HashMap::new(),
-            Arc::new(SqlitePaymentRepository::new(pool.clone())),
-            pool.clone(),
-        );
-        let confirmation_id = Uuid::new_v4();
-        let message_id = Id::<MessageMarker>::new(222);
-        notifier
-            .remember_message(confirmation_id, Id::new(111), message_id)
-            .await
-            .unwrap();
+    async fn handle_created_for_a_missing_payment_is_a_no_op() {
+        let consumer = consumer().await;
+        let msg = OutboxMessage::from(Event::Created { id: Uuid::new_v4() });
 
-        let listener = DiscordReactionListener::new(
-            String::new(),
-            pool.clone(),
-            Arc::new(ConfirmationService::new(
-                Arc::new(
-                    crate::infra::persistence::sqlx_confirmation_repository::SqliteConfirmationRepository::new(pool),
-                ),
-                Arc::new(crate::infra::notifier::LoggingNotifier),
-            )),
-        );
-
-        assert_eq!(
-            listener.confirmation_id(message_id).await.unwrap(),
-            Some(confirmation_id)
-        );
-        assert_eq!(listener.confirmation_id(Id::new(999)).await.unwrap(), None);
+        assert_eq!(consumer.handle(&msg).await, Ok(()));
     }
 
-    fn reaction(emoji: &str, count: u64) -> Reaction {
-        Reaction {
-            burst_colors: Vec::new(),
-            count,
-            count_details: twilight_model::channel::message::ReactionCountDetails {
-                burst: 0,
-                normal: count,
-            },
-            emoji: EmojiReactionType::Unicode {
-                name: emoji.to_string(),
-            },
-            me: true,
-            me_burst: false,
+    #[tokio::test]
+    async fn handle_ignores_other_events() {
+        let consumer = consumer().await;
+        let finished = OutboxMessage::from(Event::Finished { id: Uuid::new_v4() });
+        let ack_event = OutboxMessage {
+            id: Uuid::new_v4(),
+            event_type: "ACK_PENDING_CREATED".to_string(),
+            aggregate_id: Uuid::new_v4().to_string(),
+            payload: b"not json".to_vec(),
+        };
+
+        assert_eq!(consumer.handle(&finished).await, Ok(()));
+        assert_eq!(consumer.handle(&ack_event).await, Ok(()));
+    }
+
+    fn garbage() -> OutboxMessage {
+        OutboxMessage {
+            id: Uuid::new_v4(),
+            event_type: "PAYMENT_CREATED".to_string(),
+            aggregate_id: Uuid::new_v4().to_string(),
+            payload: b"not json".to_vec(),
         }
     }
 
-    #[test]
-    fn decision_from_reactions_ignores_the_bots_own_auto_added_reaction() {
-        let reactions = [reaction(APPROVE_EMOJI, 1), reaction(REJECT_EMOJI, 1)];
-        assert_eq!(decision_from_reactions(&reactions), None);
-    }
-
-    #[test]
-    fn decision_from_reactions_detects_a_human_approval() {
-        let reactions = [reaction(APPROVE_EMOJI, 2), reaction(REJECT_EMOJI, 1)];
-        assert_eq!(decision_from_reactions(&reactions), Some(true));
-    }
-
-    #[test]
-    fn decision_from_reactions_detects_a_human_rejection() {
-        let reactions = [reaction(APPROVE_EMOJI, 1), reaction(REJECT_EMOJI, 2)];
-        assert_eq!(decision_from_reactions(&reactions), Some(false));
-    }
-
-    #[test]
-    fn decision_from_reactions_does_not_approve_when_both_were_clicked() {
-        let reactions = [reaction(APPROVE_EMOJI, 2), reaction(REJECT_EMOJI, 2)];
-        assert_eq!(decision_from_reactions(&reactions), Some(false));
+    #[tokio::test]
+    async fn handle_garbage_payload_gives_up() {
+        let consumer = consumer().await;
+        assert_eq!(consumer.handle(&garbage()).await, Err(Failure::GiveUp));
     }
 
     #[test]
@@ -586,5 +581,101 @@ mod tests {
             name: "🔥".to_string(),
         };
         assert_eq!(decision_from_emoji(&emoji), None);
+    }
+
+    #[test]
+    fn decision_from_emoji_reads_approve_and_reject() {
+        let approve = EmojiReactionType::Unicode {
+            name: APPROVE_EMOJI.to_string(),
+        };
+        let reject = EmojiReactionType::Unicode {
+            name: REJECT_EMOJI.to_string(),
+        };
+        assert_eq!(decision_from_emoji(&approve), Some(true));
+        assert_eq!(decision_from_emoji(&reject), Some(false));
+    }
+
+    fn consumer_with(pool: sqlx::SqlitePool, bus: Arc<dyn EventBus>) -> DiscordConsumer {
+        let receiver = bus.subscribe();
+        DiscordConsumer {
+            client: Client::new(String::new()),
+            channels: HashMap::new(),
+            pool,
+            bus,
+            receiver: Mutex::new(receiver),
+            nack_delay: Duration::ZERO,
+        }
+    }
+
+    #[tokio::test]
+    async fn process_does_not_republish_a_delivery_it_can_handle() {
+        let pool = connect("sqlite::memory:").await.unwrap();
+        let msg = OutboxMessage::from(Event::Acked { id: Uuid::new_v4() });
+        let bus = Arc::new(TokioEventBus::new());
+        let mut spy = bus.subscribe();
+        let consumer = consumer_with(pool, bus);
+
+        consumer.process(msg).await;
+
+        let republished = tokio::time::timeout(Duration::from_millis(50), spy.recv()).await;
+        assert!(republished.is_err(), "expected no republish");
+    }
+
+    #[tokio::test]
+    async fn process_republishes_a_delivery_that_keeps_failing() {
+        let pool = connect("sqlite::memory:").await.unwrap();
+        let payment = stored(&pool, email_source()).await;
+        assert_eq!(payment.ack, Ack::Pending);
+        // no `[discord.channels]` entry configured, so `post_prompt` returns `Retry` without
+        // ever touching the network.
+        let msg = OutboxMessage::from(Event::Created { id: payment.id });
+        let bus = Arc::new(TokioEventBus::new());
+        let mut spy = bus.subscribe();
+        let consumer = consumer_with(pool, bus);
+
+        consumer.process(msg.clone()).await;
+
+        let republished = tokio::time::timeout(Duration::from_millis(200), spy.recv())
+            .await
+            .expect("expected a republish")
+            .unwrap();
+        assert_eq!(republished.id, msg.id);
+    }
+
+    #[tokio::test]
+    async fn process_does_not_republish_an_undecodable_payload() {
+        let pool = connect("sqlite::memory:").await.unwrap();
+        let bus = Arc::new(TokioEventBus::new());
+        let mut spy = bus.subscribe();
+        let consumer = consumer_with(pool, bus);
+
+        consumer.process(garbage()).await;
+
+        let republished = tokio::time::timeout(Duration::from_millis(50), spy.recv()).await;
+        assert!(republished.is_err(), "expected no republish");
+    }
+
+    #[tokio::test]
+    async fn listener_resolves_a_message_back_to_its_payment() {
+        let pool = connect("sqlite::memory:").await.unwrap();
+        let consumer = consumer_with(pool.clone(), Arc::new(TokioEventBus::new()));
+        let payment_id = Uuid::new_v4();
+        let message_id = Id::<MessageMarker>::new(222);
+        consumer
+            .remember_message(payment_id, Id::new(111), message_id)
+            .await
+            .unwrap();
+
+        let listener = DiscordReactionListener::new(
+            String::new(),
+            pool.clone(),
+            Arc::new(payment::Service::new(pool)),
+        );
+
+        assert_eq!(
+            listener.payment_id(message_id).await.unwrap(),
+            Some(payment_id)
+        );
+        assert_eq!(listener.payment_id(Id::new(999)).await.unwrap(), None);
     }
 }
