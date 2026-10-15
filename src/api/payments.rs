@@ -1,132 +1,230 @@
 use axum::Router;
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
-use axum::response::{IntoResponse, Json};
-use axum::routing::get;
+use axum::response::{IntoResponse, Json, Response};
+use axum::routing::{get, post};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::domain::confirmation::ConfirmationState;
-use crate::domain::money::Money;
-use crate::domain::payment::{CreatePaymentCommand, Payment, PaymentError, PaymentSource};
+use crate::api::serializers::details::DetailsDto;
+use crate::api::serializers::money::MoneyDto;
+use crate::api::serializers::version::VersionDto;
+use crate::domain::payment::{self, ListQueryAckFilter, ListQueryPaidFilter, Payment};
 
 use super::AppState;
 use super::serializers::rfc3339::OffsetDateTimeDto;
 
-pub fn router() -> Router<AppState> {
-    Router::new()
-        .route("/payments", get(list).post(create))
-        .route("/payments/{id}", get(find_by_id))
-}
+// Mappings
 
 #[derive(Deserialize)]
-struct CreateRequest {
-    total: Money,
+pub(super) struct CreatePaymentRequest {
+    pub(super) total: MoneyDto,
+    #[serde(flatten)]
+    pub(super) details: DetailsDto,
 }
 
 #[derive(Serialize)]
-struct PaymentResponse {
+pub(super) struct PaymentResponse {
     id: Uuid,
-    version: u32,
-    total: Money,
+    version: VersionDto,
+    display_title: String,
+    total: MoneyDto,
+    #[serde(flatten)]
+    details: DetailsDto,
+    status: PaymentStatusResponse,
+    ack: AckResponse,
+    paid_at: Option<OffsetDateTimeDto>,
     created_at: OffsetDateTimeDto,
-    source: PaymentSourceResponse,
-    confirmation_state: &'static str,
+    updated_at: OffsetDateTimeDto,
+    source: PaymentSourceDto,
 }
 
 #[derive(Serialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-enum PaymentSourceResponse {
+#[serde(rename_all = "snake_case")]
+enum AckResponse {
+    Pending,
+    Accepted,
+    Rejected,
+}
+
+impl From<payment::Ack> for AckResponse {
+    fn from(ack: payment::Ack) -> Self {
+        match ack {
+            payment::Ack::Pending => AckResponse::Pending,
+            payment::Ack::Confirmed { value: true } => AckResponse::Accepted,
+            payment::Ack::Confirmed { value: false } => AckResponse::Rejected,
+        }
+    }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "snake_case")]
+enum PaymentStatusResponse {
+    Unpaid,
+    Paid,
+}
+
+impl From<Payment> for PaymentResponse {
+    fn from(payment: Payment) -> Self {
+        let (status, paid_at) = match payment.state {
+            payment::State::Unpaid => (PaymentStatusResponse::Unpaid, None),
+            payment::State::Paid { paid_at } => (PaymentStatusResponse::Paid, Some(paid_at.into())),
+        };
+        PaymentResponse {
+            id: payment.id,
+            version: payment.version.into(),
+            display_title: payment.details.display_title(),
+            total: payment.total.into(),
+            details: payment.details.into(),
+            status,
+            ack: payment.ack.into(),
+            paid_at,
+            created_at: payment.created_at.into(),
+            updated_at: payment.updated_at.into(),
+            source: payment.source.into(),
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "UPPERCASE")]
+pub(super) enum PaymentSourceDto {
     Manual,
     Schedule {
         schedule_id: Uuid,
         occurrence_date: String,
     },
+    Email {
+        message_id: String,
+    },
 }
 
-async fn to_response(state: &AppState, payment: Payment) -> PaymentResponse {
-    let confirmation_state = state
-        .confirmation_service
-        .find_by_payment_id(payment.id)
-        .await
-        .map(|c| match c.state {
-            ConfirmationState::Queued => "queued",
-            ConfirmationState::Awaiting => "awaiting",
-            ConfirmationState::Approved => "approved",
-            ConfirmationState::Rejected => "rejected",
-        })
-        .unwrap_or("unknown");
-
-    PaymentResponse {
-        id: payment.id,
-        version: payment.version.as_u32(),
-        total: payment.total,
-        created_at: payment.created_at.into(),
-        source: payment.source.into(),
-        confirmation_state,
-    }
-}
-
-impl From<PaymentSource> for PaymentSourceResponse {
-    fn from(source: PaymentSource) -> Self {
-        match source {
-            PaymentSource::Manual => PaymentSourceResponse::Manual,
-            PaymentSource::Schedule {
+impl From<payment::Source> for PaymentSourceDto {
+    fn from(value: payment::Source) -> Self {
+        match value {
+            payment::Source::Manual => Self::Manual,
+            payment::Source::Schedule {
                 schedule_id,
                 occurrence_date,
-            } => PaymentSourceResponse::Schedule {
+            } => Self::Schedule {
                 schedule_id,
                 occurrence_date: occurrence_date.to_string(),
             },
+            payment::Source::Email { message_id } => Self::Email { message_id },
         }
     }
 }
 
-async fn create(
+pub(super) fn map_err_to_response(err: payment::Error) -> Response {
+    match err {
+        payment::Error::AlreadyExists => StatusCode::CONFLICT.into_response(),
+        payment::Error::NotFound => StatusCode::NOT_FOUND.into_response(),
+        payment::Error::InvalidAccountNumber | payment::Error::InvalidRecipient => {
+            (StatusCode::UNPROCESSABLE_ENTITY, err.to_string()).into_response()
+        }
+        payment::Error::InvalidTransition { .. } | payment::Error::ConcurrentUpdate => {
+            (StatusCode::CONFLICT, err.to_string()).into_response()
+        }
+        // NOTE: For now map those directly
+        payment::Error::Persistence(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct ListQuery {
+    paid: Option<bool>,
+    ack: Option<String>,
+}
+
+fn parse_ack(raw: &str) -> Result<ListQueryAckFilter, String> {
+    match raw {
+        "pending" => Ok(ListQueryAckFilter::Pending),
+        "accepted" => Ok(ListQueryAckFilter::Accepted),
+        other => Err(format!("unknown ack value: {other}")),
+    }
+}
+
+// Routes
+
+pub fn router() -> Router<AppState> {
+    Router::new()
+        .route("/payments", get(get_list).post(post_create))
+        .route("/payments/{id}/pay", post(post_pay))
+        .route("/payments/{id}/ack", post(post_ack))
+}
+
+async fn post_create(
     State(state): State<AppState>,
-    Json(body): Json<CreateRequest>,
+    Json(body): Json<CreatePaymentRequest>,
 ) -> impl IntoResponse {
-    let command = CreatePaymentCommand {
-        total: body.total,
-        source: PaymentSource::Manual,
-    };
-
-    match state.payment_service.create(command).await {
-        Ok(payment) => {
-            let response = to_response(&state, payment).await;
-            (StatusCode::CREATED, Json(response)).into_response()
-        }
-        Err(PaymentError::AlreadyExists) => StatusCode::CONFLICT.into_response(),
-        Err(err) => {
-            tracing::error!(%err, "failed to create payment");
-            StatusCode::INTERNAL_SERVER_ERROR.into_response()
-        }
+    match state
+        .payment_service
+        .create(
+            body.total.into(),
+            body.details.into(),
+            payment::Source::Manual,
+        )
+        .await
+    {
+        Ok(payment) => (StatusCode::CREATED, Json(PaymentResponse::from(payment))).into_response(),
+        Err(err) => map_err_to_response(err),
     }
 }
 
-async fn list(State(state): State<AppState>) -> impl IntoResponse {
-    let payments = match state.payment_service.find_all().await {
-        Ok(payments) => payments,
-        Err(err) => {
-            tracing::error!(%err, "failed to list payments");
-            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
-        }
+async fn get_list(
+    State(state): State<AppState>,
+    Query(query): Query<ListQuery>,
+) -> impl IntoResponse {
+    let ack_filter = match query.ack.as_deref().map(parse_ack).transpose() {
+        Ok(ack_filter) => ack_filter,
+        Err(err) => return (StatusCode::BAD_REQUEST, err).into_response(),
     };
-
-    let mut responses = Vec::new();
-    for payment in payments {
-        responses.push(to_response(&state, payment).await);
+    let paid_filter = query.paid.map(|paid| {
+        if paid {
+            ListQueryPaidFilter::Paid
+        } else {
+            ListQueryPaidFilter::Unpaid
+        }
+    });
+    match state
+        .payment_service
+        .list(Some(payment::ListQuery {
+            paid_filter,
+            ack_filter,
+        }))
+        .await
+    {
+        Ok(payments) => Json(
+            payments
+                .into_iter()
+                .map(PaymentResponse::from)
+                .collect::<Vec<_>>(),
+        )
+        .into_response(),
+        Err(err) => map_err_to_response(err),
     }
-    Json(responses).into_response()
 }
 
-async fn find_by_id(State(state): State<AppState>, Path(id): Path<Uuid>) -> impl IntoResponse {
-    match state.payment_service.find_by_id(id).await {
-        Ok(Some(payment)) => Json(to_response(&state, payment).await).into_response(),
-        Ok(None) => StatusCode::NOT_FOUND.into_response(),
-        Err(err) => {
-            tracing::error!(%err, "failed to find payment");
-            StatusCode::INTERNAL_SERVER_ERROR.into_response()
-        }
+#[derive(Deserialize)]
+struct AckRequest {
+    accept: bool,
+}
+
+async fn post_pay(State(state): State<AppState>, Path(id): Path<Uuid>) -> impl IntoResponse {
+    transition_response(state.payment_service.pay(id).await)
+}
+
+async fn post_ack(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    Json(body): Json<AckRequest>,
+) -> impl IntoResponse {
+    transition_response(state.payment_service.ack(id, body.accept).await)
+}
+
+fn transition_response(result: Result<Payment, payment::Error>) -> Response {
+    match result {
+        Ok(payment) => Json(PaymentResponse::from(payment)).into_response(),
+        Err(err) => map_err_to_response(err),
     }
 }

@@ -1,19 +1,35 @@
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub struct Version(u32);
 
 impl Version {
-    pub const FIRST: Version = Version(1);
+    pub const FIRST: Version = Version(0);
 
     pub fn next(self) -> Version {
         Version(self.0 + 1)
     }
+}
 
-    pub fn as_u32(self) -> u32 {
-        self.0
+impl From<Version> for u32 {
+    fn from(value: Version) -> Self {
+        value.0
     }
+}
 
-    pub fn from_u32(value: u32) -> Version {
+impl From<u32> for Version {
+    fn from(value: u32) -> Self {
         Version(value)
+    }
+}
+
+impl From<Version> for i64 {
+    fn from(value: Version) -> Self {
+        value.0 as i64
+    }
+}
+
+impl From<i64> for Version {
+    fn from(value: i64) -> Self {
+        Version(value as u32)
     }
 }
 
@@ -23,7 +39,7 @@ mod tests {
 
     #[test]
     fn increments_correctly() {
-        assert_eq!(Version::FIRST.next(), Version(2));
-        assert_eq!(Version::FIRST.next().next(), Version(3));
+        assert_eq!(Version::FIRST.next(), Version(1));
+        assert_eq!(Version::FIRST.next().next(), Version(2));
     }
 }

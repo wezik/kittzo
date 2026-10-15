@@ -1,12 +1,13 @@
 use axum::Router;
-use axum::extract::State;
+use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Json};
-use axum::routing::post;
+use axum::routing::{delete, post};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::domain::money::Money;
+use crate::api::serializers::details::DetailsDto;
+use crate::api::serializers::money::MoneyDto;
 use crate::domain::payment_schedule::{
     PaymentSchedule, PaymentScheduleError, PaymentScheduleStatus, Recurrence,
 };
@@ -15,12 +16,16 @@ use super::AppState;
 use super::serializers::rfc3339::OffsetDateTimeDto;
 
 pub fn router() -> Router<AppState> {
-    Router::new().route("/payment-schedules", post(create).get(list))
+    Router::new()
+        .route("/payment-schedules", post(create).get(list))
+        .route("/payment-schedules/{id}", delete(remove).put(edit))
 }
 
 #[derive(Deserialize)]
 struct CreateScheduleRequest {
-    total: Money,
+    total: MoneyDto,
+    #[serde(flatten)]
+    details: DetailsDto,
     recurrence: RecurrenceRequest,
 }
 
@@ -44,7 +49,9 @@ struct PaymentScheduleResponse {
     version: u32,
     created_at: OffsetDateTimeDto,
     updated_at: OffsetDateTimeDto,
-    total: Money,
+    total: MoneyDto,
+    #[serde(flatten)]
+    details: DetailsDto,
     recurrence: RecurrenceResponse,
     next_due_at: String,
     status: PaymentScheduleStatusResponse,
@@ -84,10 +91,11 @@ impl From<PaymentSchedule> for PaymentScheduleResponse {
     fn from(schedule: PaymentSchedule) -> Self {
         PaymentScheduleResponse {
             id: schedule.id,
-            version: schedule.version.as_u32(),
+            version: schedule.version.into(),
             created_at: schedule.created_at.into(),
             updated_at: schedule.updated_at.into(),
-            total: schedule.total,
+            total: schedule.total.into(),
+            details: schedule.details.into(),
             recurrence: schedule.recurrence.into(),
             next_due_at: schedule.next_due_at.to_string(),
             status: schedule.status.into(),
@@ -101,7 +109,11 @@ async fn create(
 ) -> impl IntoResponse {
     match state
         .schedule_service
-        .create(body.total, body.recurrence.into())
+        .create(
+            body.total.into(),
+            body.details.into(),
+            body.recurrence.into(),
+        )
         .await
     {
         Ok(created) => (
@@ -131,4 +143,44 @@ async fn list(State(state): State<AppState>) -> impl IntoResponse {
         .map(PaymentScheduleResponse::from)
         .collect();
     Json(schedules).into_response()
+}
+
+async fn remove(State(state): State<AppState>, Path(id): Path<Uuid>) -> impl IntoResponse {
+    match state.schedule_service.delete(id).await {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(PaymentScheduleError::NotFound) => StatusCode::NOT_FOUND.into_response(),
+        Err(err) => {
+            tracing::error!(%err, "failed to delete payment schedule");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+    }
+}
+
+async fn edit(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    Json(body): Json<CreateScheduleRequest>,
+) -> impl IntoResponse {
+    match state
+        .schedule_service
+        .edit(
+            id,
+            body.total.into(),
+            body.details.into(),
+            body.recurrence.into(),
+        )
+        .await
+    {
+        Ok(edited) => Json(PaymentScheduleResponse::from(edited)).into_response(),
+        Err(PaymentScheduleError::NotFound) => StatusCode::NOT_FOUND.into_response(),
+        Err(PaymentScheduleError::ConcurrentUpdate) => (
+            StatusCode::CONFLICT,
+            "schedule is being processed right now, try again",
+        )
+            .into_response(),
+        Err(err) => {
+            tracing::error!(%err, "failed to edit payment schedule");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+    }
 }

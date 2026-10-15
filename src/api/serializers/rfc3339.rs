@@ -1,10 +1,6 @@
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use time::OffsetDateTime;
 
-/// Wire-format newtype for response/request DTOs: use this as the field type instead
-/// of repeating `#[serde(with = "time::serde::rfc3339")]` (and its `::option` variant)
-/// on every timestamp field — `Option<OffsetDateTimeDto>` just works, no separate
-/// annotation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct OffsetDateTimeDto(pub OffsetDateTime);
 

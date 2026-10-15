@@ -1,6 +1,11 @@
-pub mod confirmation;
+pub mod email;
+pub mod event;
+pub mod event_bus;
 pub mod money;
+pub mod outbox;
 pub mod payment;
 pub mod payment_schedule;
+pub mod run;
 pub mod startup_task;
+pub mod transaction;
 pub mod version;

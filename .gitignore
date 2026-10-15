@@ -4,3 +4,7 @@
 
 # not reviewed / no defined shape for project docs yet, local-only for now
 /CLAUDE.md
+
+# payment scripts: local-only, they encode how the user pays things
+/scripts/
+__pycache__/

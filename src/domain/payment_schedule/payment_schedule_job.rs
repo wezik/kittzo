@@ -4,7 +4,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use time::{OffsetDateTime, SignedDuration};
 
-use crate::domain::payment::{CreatePaymentCommand, PaymentService, PaymentSource};
+use crate::domain::payment;
 use crate::domain::payment_schedule::{PaymentScheduleError, PaymentScheduleStatus};
 use crate::domain::startup_task::StartupTask;
 
@@ -37,14 +37,14 @@ impl PaymentScheduleJobConfig {
 
 pub struct PaymentScheduleJob {
     schedule_service: Arc<PaymentScheduleService>,
-    payment_service: Arc<PaymentService>,
+    payment_service: Arc<payment::Service>,
     config: PaymentScheduleJobConfig,
 }
 
 impl PaymentScheduleJob {
     pub fn new(
         schedule_service: Arc<PaymentScheduleService>,
-        payment_service: Arc<PaymentService>,
+        payment_service: Arc<payment::Service>,
         config: PaymentScheduleJobConfig,
     ) -> Self {
         Self {
@@ -82,15 +82,16 @@ impl PaymentScheduleJob {
                     "processing due payment schedule occurrence"
                 );
 
-                let cmd = CreatePaymentCommand {
-                    total: schedule.total,
-                    source: PaymentSource::Schedule {
-                        schedule_id: schedule.id,
-                        occurrence_date: occurence_date,
-                    },
+                let source = payment::Source::Schedule {
+                    schedule_id: schedule.id,
+                    occurrence_date: occurence_date,
                 };
 
-                match self.payment_service.create(cmd).await {
+                match self
+                    .payment_service
+                    .create(schedule.total, schedule.details_for(occurence_date), source)
+                    .await
+                {
                     Ok(_) => {
                         schedule.advance_due_date();
                     }
@@ -147,30 +148,20 @@ impl StartupTask for PaymentScheduleJob {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::confirmation::ConfirmationService;
     use crate::domain::money::Money;
-    use crate::domain::payment::PaymentSource;
+    use crate::domain::payment;
+    use crate::domain::payment::some_standard_details;
     use crate::domain::payment_schedule::{PaymentSchedule, PaymentScheduleStatus, Recurrence};
-    use crate::infra::notifier::LoggingNotifier;
     use crate::infra::persistence::connect;
-    use crate::infra::persistence::sqlx_confirmation_repository::SqliteConfirmationRepository;
-    use crate::infra::persistence::sqlx_payment_repository::SqlitePaymentRepository;
     use crate::infra::persistence::sqlx_payment_schedule_repository::SqlitePaymentScheduleRepository;
 
     async fn job() -> (
         PaymentScheduleJob,
-        Arc<PaymentService>,
+        Arc<payment::Service>,
         Arc<PaymentScheduleService>,
     ) {
         let pool = connect("sqlite::memory:").await.unwrap();
-        let confirmations = Arc::new(ConfirmationService::new(
-            Arc::new(SqliteConfirmationRepository::new(pool.clone())),
-            Arc::new(LoggingNotifier),
-        ));
-        let payment_service = Arc::new(PaymentService::new(
-            Arc::new(SqlitePaymentRepository::new(pool.clone())),
-            confirmations,
-        ));
+        let payment_service = Arc::new(payment::Service::new(pool.clone()));
         let schedule_service = Arc::new(PaymentScheduleService::new(Arc::new(
             SqlitePaymentScheduleRepository::new(pool),
         )));
@@ -188,6 +179,7 @@ mod tests {
         let created = schedule_service
             .create(
                 Money::from_parts("USD", "10.99").unwrap(),
+                some_standard_details(),
                 Recurrence::Monthly { day_of_month: 1 },
             )
             .await
@@ -208,10 +200,15 @@ mod tests {
 
         job.process().await.unwrap();
 
-        let payments = payment_service.find_all().await.unwrap();
+        let payments = payment_service.list(None).await.unwrap();
         assert_eq!(payments.len(), 1);
-        match &payments[0].source {
-            PaymentSource::Schedule { schedule_id, .. } => assert_eq!(*schedule_id, schedule.id),
+        let payment = &payments[0];
+        assert_eq!(payment.state, payment::State::Unpaid);
+        assert_eq!(payment.details, schedule.details);
+        match &payment.source {
+            payment::Source::Schedule { schedule_id, .. } => {
+                assert_eq!(*schedule_id, schedule.id)
+            }
             other => panic!("expected a scheduled payment, got {other:?}"),
         }
     }
@@ -224,7 +221,7 @@ mod tests {
         job.process().await.unwrap();
         job.process().await.unwrap();
 
-        assert_eq!(payment_service.find_all().await.unwrap().len(), 1);
+        assert_eq!(payment_service.list(None).await.unwrap().len(), 1);
     }
 
     #[tokio::test]
@@ -233,6 +230,7 @@ mod tests {
         let schedule = schedule_service
             .create(
                 Money::from_parts("USD", "10.99").unwrap(),
+                some_standard_details(),
                 Recurrence::Monthly { day_of_month: 1 },
             )
             .await
@@ -240,7 +238,7 @@ mod tests {
 
         job.process().await.unwrap();
 
-        assert_eq!(payment_service.find_all().await.unwrap().len(), 0);
+        assert_eq!(payment_service.list(None).await.unwrap().len(), 0);
         let schedules = schedule_service.find_all().await.unwrap();
         assert_eq!(schedules.len(), 1);
         assert_eq!(schedules[0].status, PaymentScheduleStatus::Idle);
