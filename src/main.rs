@@ -17,9 +17,9 @@ use app::payment_schedule_job::PaymentScheduleJob;
 use app::startup_task::StartupTask;
 use infra::Config;
 use infra::discord::{DiscordConsumer, DiscordReactionListener};
+use infra::email::OpenRouterParser;
 use infra::event_bus::TokioEventBus;
 use infra::imap::GmailMailbox;
-use infra::openrouter::OpenRouterParser;
 use infra::tray::PendingAckWatch;
 
 fn main() {
@@ -89,11 +89,7 @@ async fn serve(config: Config, pending_ack: Arc<AtomicBool>) {
             email_config.openrouter_api_key.clone(),
             email_config.model.clone(),
         ));
-        let email_service = Arc::new(email::Service::new(
-            parser,
-            payment_service.clone(),
-            email_config.sender_rules(),
-        ));
+        let email_service = Arc::new(email::Service::new(parser, payment_service.clone()));
         let mailbox = Arc::new(GmailMailbox::new(
             email_config.imap_host.clone(),
             email_config.imap_user.clone(),

@@ -1,61 +1,48 @@
 use std::sync::Arc;
 
 use crate::app::payment;
-use crate::domain::email::{Email, EmailParser, ParseError, SenderRule, prepare};
-use crate::domain::payment::Source;
+use crate::domain::email::{self, Email, Parser};
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error(transparent)]
-    Parse(#[from] ParseError),
+    Parse(#[from] email::Error),
 
     #[error("failed to create payment: {0}")]
     Payment(#[from] payment::Error),
 }
 
 pub struct Service {
-    parser: Arc<dyn EmailParser>,
+    parser: Arc<dyn Parser>,
     payments: Arc<payment::Service>,
-    rules: Vec<SenderRule>,
 }
 
 impl Service {
-    pub fn new(
-        parser: Arc<dyn EmailParser>,
-        payments: Arc<payment::Service>,
-        rules: Vec<SenderRule>,
-    ) -> Self {
-        Self {
-            parser,
-            payments,
-            rules,
-        }
+    pub fn new(parser: Arc<dyn Parser>, payments: Arc<payment::Service>) -> Self {
+        Self { parser, payments }
     }
 
     pub async fn process(&self, email: &Email) -> Result<usize, Error> {
-        let candidates = self.parser.parse(email).await?;
+        let results = self.parser.parse(email).await?.results;
+        let candidates = results.len();
         let mut created = 0;
-        for candidate in &candidates {
-            match prepare(email, candidate, &self.rules) {
-                Ok((total, details)) => {
-                    let source = Source::Email {
-                        message_id: email.message_id.clone(),
-                    };
-                    self.payments.create(total, details, source).await?;
+        for result in results {
+            match result {
+                Ok((payment, event)) => {
+                    self.payments.insert(payment, event).await?;
                     created += 1;
                 }
-                Err(skip) => tracing::warn!(
-                    %skip,
-                    message_id = %email.message_id,
+                Err(err) => tracing::warn!(
+                    %err,
+                    message_id = %email.external_id,
                     subject = %email.subject,
-                    ?candidate,
                     "skipped payment candidate from email"
                 ),
             }
         }
         tracing::info!(
-            message_id = %email.message_id,
-            candidates = candidates.len(),
+            message_id = %email.external_id,
+            candidates,
             created,
             "processed email"
         );
@@ -66,23 +53,43 @@ impl Service {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::email::{Candidate, CandidateKind};
-    use crate::domain::payment::{AccountNumber, Details, Payment, TaxForm};
+    use crate::domain::email::ParsingResult;
+    use crate::domain::money::some_money;
+    use crate::domain::payment::{self as domain, Details, Payment, Source, TaxForm};
     use crate::infra::persistence::connect;
     use async_trait::async_trait;
+    use uuid::Uuid;
 
-    struct FakeParser(Result<Vec<Candidate>, ParseError>);
+    struct FakeParser(Result<Vec<Result<Details, domain::Error>>, email::Error>);
 
     #[async_trait]
-    impl EmailParser for FakeParser {
-        async fn parse(&self, _email: &Email) -> Result<Vec<Candidate>, ParseError> {
-            self.0.clone()
+    impl Parser for FakeParser {
+        async fn parse(&self, email: &Email) -> Result<ParsingResult, email::Error> {
+            let source = Source::Email {
+                message_id: email.external_id.clone(),
+            };
+            let results = match &self.0 {
+                Ok(results) => results,
+                Err(err) => return Err(err.clone()),
+            };
+            Ok(ParsingResult {
+                results: results
+                    .iter()
+                    .map(|result| match result {
+                        Ok(details) => {
+                            Ok(Payment::new(some_money(), details.clone(), source.clone()))
+                        }
+                        Err(_) => Err(domain::Error::InvalidAccountNumber),
+                    })
+                    .collect(),
+            })
         }
     }
 
     fn email() -> Email {
         Email {
-            message_id: "<m1@mail.gmail.com>".into(),
+            id: Uuid::new_v4(),
+            external_id: "<m1@mail.gmail.com>".into(),
             from: "ksiegowa@biuro.pl".into(),
             subject: "Rozliczenie 09/2026".into(),
             text: "ZUS, VAT-7 i faktura".into(),
@@ -90,77 +97,36 @@ mod tests {
         }
     }
 
-    fn candidate(kind: CandidateKind) -> Candidate {
-        Candidate {
-            title: Some("from ai".into()),
-            amount: "100.00".into(),
-            currency: "PLN".into(),
-            invoice_nr: Some("49/09/2026".into()),
-            period: Some("2026-09".into()),
-            kind,
-        }
-    }
-
     async fn service(
-        parsed: Result<Vec<Candidate>, ParseError>,
+        parsed: Result<Vec<Result<Details, domain::Error>>, email::Error>,
     ) -> (Service, Arc<payment::Service>) {
         let payments = Arc::new(payment::Service::new(
             connect("sqlite::memory:").await.unwrap(),
         ));
-        let rules = vec![SenderRule {
-            from: "@biuro.pl".into(),
-            title: "Faktura {invoice_nr}".into(),
-        }];
-        let service = Service::new(Arc::new(FakeParser(parsed)), payments.clone(), rules);
+        let service = Service::new(Arc::new(FakeParser(parsed)), payments.clone());
         (service, payments)
     }
 
-    fn details(payments: Vec<Payment>) -> Vec<Details> {
-        payments
-            .into_iter()
-            .map(|payment| {
-                assert_eq!(
-                    payment.source,
-                    Source::Email {
-                        message_id: "<m1@mail.gmail.com>".into()
-                    }
-                );
-                payment.details
-            })
-            .collect()
-    }
-
     #[tokio::test]
-    async fn creates_one_payment_per_valid_candidate_and_skips_the_rest() {
+    async fn creates_one_payment_per_valid_result_and_skips_the_rest() {
         let (service, payments) = service(Ok(vec![
-            candidate(CandidateKind::Standard {
-                account_number: "61109010140000071219812874".into(),
-                recipient: "Biuro".into(),
-            }),
-            candidate(CandidateKind::Tax {
-                form: "VAT-7".into(),
-            }),
-            candidate(CandidateKind::Standard {
-                account_number: "123".into(),
-                recipient: "Biuro".into(),
-            }),
+            Ok(domain::some_standard_details()),
+            Ok(Details::tax(TaxForm::Vat7)),
+            Err(domain::Error::InvalidAccountNumber),
         ]))
         .await;
 
         let created = service.process(&email()).await.unwrap();
 
         assert_eq!(created, 2);
+        let stored = payments.list(None).await.unwrap();
+        assert!(stored.iter().all(|payment| payment.source
+            == Source::Email {
+                message_id: "<m1@mail.gmail.com>".into()
+            }));
         assert_eq!(
-            details(payments.list(None).await.unwrap()),
-            vec![
-                Details::standard(
-                    "Faktura 49/09/2026".into(),
-                    AccountNumber::from("61109010140000071219812874".into()).unwrap(),
-                    "Biuro".into()
-                )
-                .unwrap(),
-                Details::tax(TaxForm::Vat7),
-            ]
+            stored.into_iter().map(|p| p.details).collect::<Vec<_>>(),
+            vec![domain::some_standard_details(), Details::tax(TaxForm::Vat7)]
         );
     }
 
@@ -174,7 +140,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_parser_failure_is_an_error_so_the_email_gets_retried() {
-        let (service, _) = service(Err(ParseError("timeout".into()))).await;
+        let (service, _) = service(Err(email::Error::Parse("timeout".into()))).await;
 
         assert!(matches!(
             service.process(&email()).await,

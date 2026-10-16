@@ -114,6 +114,15 @@ impl Payment {
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    #[error("payment total is invalid")]
+    InvalidTotal,
+
+    #[error("payment title can't be empty")]
+    InvalidTitle,
+
+    #[error("payment tax form is invalid")]
+    InvalidTaxForm,
+
     #[error("payment account number is invalid")]
     InvalidAccountNumber,
 

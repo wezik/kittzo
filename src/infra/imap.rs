@@ -2,6 +2,7 @@ use std::collections::HashSet;
 
 use async_trait::async_trait;
 use mail_parser::{MessageParser, MimeHeaders};
+use uuid::Uuid;
 
 use crate::domain::email::{Email, Mailbox, MailboxError, Pdf};
 
@@ -92,7 +93,8 @@ fn email_from_raw(message_id: String, raw: &[u8]) -> Email {
     let Some(message) = MessageParser::default().parse(raw) else {
         tracing::warn!(%message_id, "unparsable email");
         return Email {
-            message_id,
+            id: Uuid::new_v4(),
+            external_id: message_id,
             from: String::new(),
             subject: String::new(),
             text: String::new(),
@@ -147,7 +149,8 @@ fn email_from_raw(message_id: String, raw: &[u8]) -> Email {
     tracing::debug!(%message_id, %text, "email body sent to the parser");
 
     Email {
-        message_id,
+        id: Uuid::new_v4(),
+        external_id: message_id,
         from,
         subject,
         text,

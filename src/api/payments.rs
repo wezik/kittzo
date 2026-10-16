@@ -121,9 +121,13 @@ pub(super) fn map_err_to_response(err: app::payment::Error) -> Response {
     match err {
         Error::AlreadyExists => StatusCode::CONFLICT.into_response(),
         Error::NotFound => StatusCode::NOT_FOUND.into_response(),
-        Error::Domain(payment::Error::InvalidAccountNumber | payment::Error::InvalidRecipient) => {
-            (StatusCode::UNPROCESSABLE_ENTITY, err.to_string()).into_response()
-        }
+        Error::Domain(
+            payment::Error::InvalidTotal
+            | payment::Error::InvalidTitle
+            | payment::Error::InvalidTaxForm
+            | payment::Error::InvalidAccountNumber
+            | payment::Error::InvalidRecipient,
+        ) => (StatusCode::UNPROCESSABLE_ENTITY, err.to_string()).into_response(),
         Error::Domain(payment::Error::InvalidTransition { .. }) | Error::ConcurrentUpdate => {
             (StatusCode::CONFLICT, err.to_string()).into_response()
         }
