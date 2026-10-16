@@ -63,7 +63,10 @@ impl Service {
         source: Source,
     ) -> Result<Payment, Error> {
         let (payment, event) = Payment::new(total, details, source);
+        self.insert(payment, event).await
+    }
 
+    pub async fn insert(&self, payment: Payment, event: payment::Event) -> Result<Payment, Error> {
         let mut tx = start_tx(&self.pool).await?;
 
         let payment = sqlx_payment_repository::create(&mut *tx, &payment).await?;

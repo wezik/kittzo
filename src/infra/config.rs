@@ -5,7 +5,6 @@ use std::path::Path;
 use crate::app::email_watch_job::EmailWatchConfig;
 use crate::app::outbox::OutboxRelayConfig;
 use crate::app::payment_schedule_job::PaymentScheduleJobConfig;
-use crate::domain::email::SenderRule;
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
@@ -62,7 +61,6 @@ pub struct EmailConfig {
     pub poll_interval_secs: u64,
     pub openrouter_api_key: String,
     pub model: String,
-    senders: Vec<TomlSenderRule>,
 }
 
 impl Default for EmailConfig {
@@ -75,7 +73,6 @@ impl Default for EmailConfig {
             poll_interval_secs: EmailWatchConfig::default().poll_interval_secs,
             openrouter_api_key: String::new(),
             model: "z-ai/glm-5.3-flash".to_string(),
-            senders: Vec::new(),
         }
     }
 }
@@ -93,22 +90,6 @@ impl EmailConfig {
             ..EmailWatchConfig::default()
         }
     }
-
-    pub fn sender_rules(&self) -> Vec<SenderRule> {
-        self.senders
-            .iter()
-            .map(|rule| SenderRule {
-                from: rule.from.clone(),
-                title: rule.title.clone(),
-            })
-            .collect()
-    }
-}
-
-#[derive(Debug, Clone, Deserialize, PartialEq)]
-struct TomlSenderRule {
-    from: String,
-    title: String,
 }
 
 const DEFAULT_PATH: &str = "kittzo.toml";
@@ -231,28 +212,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parses_email_section_with_sender_rules() {
+    fn parses_email_section() {
         let cfg = Config::parse(
             r#"
             [email]
             openrouter_api_key = "sk-test"
-
-            [[email.senders]]
-            from = "@biuro.pl"
-            title = "Faktura {invoice_nr}"
             "#,
         );
         assert_eq!(cfg.email.openrouter_api_key, "sk-test");
         assert_eq!(cfg.email.model, "z-ai/glm-5.3-flash");
         assert_eq!(cfg.email.label, "kittzo/payments");
         assert!(!cfg.email.is_configured());
-        assert_eq!(
-            cfg.email.sender_rules(),
-            vec![SenderRule {
-                from: "@biuro.pl".into(),
-                title: "Faktura {invoice_nr}".into()
-            }]
-        );
     }
 
     #[test]

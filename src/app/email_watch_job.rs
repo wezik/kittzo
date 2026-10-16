@@ -70,11 +70,11 @@ impl EmailWatchJob {
         for email in emails {
             let recorded = match self.service.process(&email).await {
                 Ok(created) => {
-                    processed::mark_processed(&self.pool, &email.message_id, created).await
+                    processed::mark_processed(&self.pool, &email.external_id, created).await
                 }
                 Err(err) => match processed::record_failure(
                     &self.pool,
-                    &email.message_id,
+                    &email.external_id,
                     &err.to_string(),
                     self.config.max_attempts,
                 )
@@ -83,7 +83,7 @@ impl EmailWatchJob {
                     Ok(attempts) if attempts >= self.config.max_attempts => {
                         tracing::error!(
                             %err,
-                            message_id = %email.message_id,
+                            message_id = %email.external_id,
                             subject = %email.subject,
                             attempts,
                             "giving up on email, delete its processed_emails row to retry"
@@ -93,7 +93,7 @@ impl EmailWatchJob {
                     Ok(attempts) => {
                         tracing::warn!(
                             %err,
-                            message_id = %email.message_id,
+                            message_id = %email.external_id,
                             subject = %email.subject,
                             attempts,
                             "failed to process email, will retry"
@@ -104,7 +104,7 @@ impl EmailWatchJob {
                 },
             };
             if let Err(err) = recorded {
-                tracing::error!(%err, message_id = %email.message_id, "failed to record email outcome");
+                tracing::error!(%err, message_id = %email.external_id, "failed to record email outcome");
             }
         }
     }
@@ -132,10 +132,11 @@ mod tests {
 
     use super::*;
     use crate::app::payment;
-    use crate::domain::email::{
-        Candidate, CandidateKind, Email, EmailParser, MailboxError, ParseError,
-    };
+    use crate::domain::email::{self, Email, MailboxError, Parser, ParsingResult};
+    use crate::domain::money::some_money;
+    use crate::domain::payment::{Payment, Source, some_standard_details};
     use crate::infra::persistence::connect;
+    use uuid::Uuid;
 
     struct FakeMailbox(Vec<Email>);
 
@@ -145,7 +146,7 @@ mod tests {
             Ok(self
                 .0
                 .iter()
-                .filter(|email| !known.contains(&email.message_id))
+                .filter(|email| !known.contains(&email.external_id))
                 .cloned()
                 .collect())
         }
@@ -157,29 +158,29 @@ mod tests {
     }
 
     #[async_trait]
-    impl EmailParser for FakeParser {
-        async fn parse(&self, _email: &Email) -> Result<Vec<Candidate>, ParseError> {
+    impl Parser for FakeParser {
+        async fn parse(&self, email: &Email) -> Result<ParsingResult, email::Error> {
             self.calls.fetch_add(1, Ordering::SeqCst);
             if *self.fail.lock().unwrap() {
-                return Err(ParseError("model timed out".into()));
+                return Err(email::Error::Parse("model timed out".into()));
             }
-            Ok(vec![Candidate {
-                title: Some("Faktura 1".into()),
-                amount: "10.00".into(),
-                currency: "PLN".into(),
-                invoice_nr: None,
-                period: None,
-                kind: CandidateKind::Standard {
-                    account_number: "61109010140000071219812874".into(),
-                    recipient: "X".into(),
-                },
-            }])
+            let source = Source::Email {
+                message_id: email.external_id.clone(),
+            };
+            Ok(ParsingResult {
+                results: vec![Ok(Payment::new(
+                    some_money(),
+                    some_standard_details(),
+                    source,
+                ))],
+            })
         }
     }
 
     fn email(id: &str) -> Email {
         Email {
-            message_id: id.into(),
+            id: Uuid::new_v4(),
+            external_id: id.into(),
             from: "a@x.pl".into(),
             subject: "Faktura".into(),
             text: "do zapłaty".into(),
@@ -197,7 +198,7 @@ mod tests {
             calls: AtomicUsize::new(0),
             fail: Mutex::new(fail),
         });
-        let service = Arc::new(Service::new(parser.clone(), payments.clone(), vec![]));
+        let service = Arc::new(Service::new(parser.clone(), payments.clone()));
         let job = EmailWatchJob::new(
             Arc::new(FakeMailbox(emails)),
             service,
