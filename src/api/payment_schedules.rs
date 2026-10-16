@@ -4,6 +4,8 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Json};
 use axum::routing::{delete, post};
 use serde::{Deserialize, Serialize};
+use time::format_description::well_known::Iso8601;
+use time::{Date, OffsetDateTime};
 use uuid::Uuid;
 
 use crate::api::serializers::details::DetailsDto;
@@ -27,6 +29,7 @@ struct CreateScheduleRequest {
     account_number: String,
     recipient: String,
     recurrence: RecurrenceRequest,
+    starts_at: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -95,6 +98,15 @@ async fn create(
         Ok(number) => number,
         Err(err) => return (StatusCode::UNPROCESSABLE_ENTITY, err.to_string()).into_response(),
     };
+    let starts_at = match body.starts_at {
+        None => OffsetDateTime::now_utc().date(),
+        Some(raw) => match Date::parse(&raw, &Iso8601::DATE) {
+            Ok(date) => date,
+            Err(err) => {
+                return (StatusCode::UNPROCESSABLE_ENTITY, err.to_string()).into_response();
+            }
+        },
+    };
     match state
         .schedule_service
         .create(
@@ -103,6 +115,7 @@ async fn create(
             account_number,
             body.recipient,
             body.recurrence.into(),
+            starts_at,
         )
         .await
     {

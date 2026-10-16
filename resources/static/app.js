@@ -272,6 +272,7 @@ document.getElementById("schedule-form").addEventListener("submit", async (e) =>
     account_number: form.get("account_number"),
     recipient: form.get("recipient"),
     recurrence: { type: "monthly", day_of_month: Number(form.get("day_of_month")) },
+    starts_at: form.get("starts_at") || undefined,
   };
   if (await api("POST", "/payment-schedules", body)) e.target.reset();
   refresh();

@@ -45,9 +45,16 @@ impl PaymentScheduleService {
         account_number: AccountNumber,
         recipient: String,
         recurrence: Recurrence,
+        starts_at: Date,
     ) -> Result<PaymentSchedule, PaymentScheduleError> {
-        let schedule =
-            PaymentSchedule::new(total, title_template, account_number, recipient, recurrence)?;
+        let schedule = PaymentSchedule::new(
+            total,
+            title_template,
+            account_number,
+            recipient,
+            recurrence,
+            starts_at,
+        )?;
         sqlx_payment_schedule_repository::create(&self.pool, &schedule).await
     }
 
@@ -195,6 +202,7 @@ mod tests {
                 AccountNumber::from("61109010140000071219812874".into()).unwrap(),
                 "".into(),
                 Recurrence::Monthly { day_of_month: 1 },
+                today(),
             )
             .await
             .unwrap_err();

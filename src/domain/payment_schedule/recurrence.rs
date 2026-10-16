@@ -6,17 +6,14 @@ pub enum Recurrence {
 }
 
 impl Recurrence {
-    pub fn next_occurrence(&self, start: Date, cursor: Option<Date>) -> Date {
+    pub fn next_occurrence(&self, after: Date) -> Date {
         match self {
-            Recurrence::Monthly { day_of_month } => {
-                next_occurence_monthly(*day_of_month, start, cursor)
-            }
+            Recurrence::Monthly { day_of_month } => next_occurence_monthly(*day_of_month, after),
         }
     }
 }
 
-fn next_occurence_monthly(day_of_month: u8, start: Date, cursor: Option<Date>) -> Date {
-    let from = cursor.filter(|v| *v > start).unwrap_or(start);
+fn next_occurence_monthly(day_of_month: u8, from: Date) -> Date {
     let (year, month) = (from.year(), from.month());
 
     // clamp to the last day of the month
@@ -59,7 +56,7 @@ mod tests {
     fn next_occurrence_stays_in_month_when_due_day_has_not_passed() {
         let recurrence = Recurrence::Monthly { day_of_month: 20 };
         assert_eq!(
-            recurrence.next_occurrence(date(2026, 1, 15), None),
+            recurrence.next_occurrence(date(2026, 1, 15)),
             date(2026, 1, 20)
         );
     }
@@ -68,7 +65,7 @@ mod tests {
     fn next_occurrence_rolls_to_next_month_once_due_day_has_passed() {
         let recurrence = Recurrence::Monthly { day_of_month: 5 };
         assert_eq!(
-            recurrence.next_occurrence(date(2026, 1, 15), None),
+            recurrence.next_occurrence(date(2026, 1, 15)),
             date(2026, 2, 5)
         );
     }
@@ -78,21 +75,21 @@ mod tests {
         let recurrence = Recurrence::Monthly { day_of_month: 31 };
         // Jan 31 -> not yet passed on Jan 1, so due date is Jan 31.
         assert_eq!(
-            recurrence.next_occurrence(date(2026, 1, 1), None),
+            recurrence.next_occurrence(date(2026, 1, 1)),
             date(2026, 1, 31)
         );
         // From Jan 31, the next occurrence clamps into February (2026 isn't leap).
         assert_eq!(
-            recurrence.next_occurrence(date(2026, 1, 1), Some(date(2026, 1, 31))),
+            recurrence.next_occurrence(date(2026, 1, 31)),
             date(2026, 2, 28)
         );
     }
 
     #[test]
-    fn next_occurrence_advances_past_the_cursor_even_in_december() {
+    fn next_occurrence_rolls_over_the_year_in_december() {
         let recurrence = Recurrence::Monthly { day_of_month: 10 };
         assert_eq!(
-            recurrence.next_occurrence(date(2026, 1, 1), Some(date(2026, 12, 10))),
+            recurrence.next_occurrence(date(2026, 12, 10)),
             date(2027, 1, 10)
         );
     }
