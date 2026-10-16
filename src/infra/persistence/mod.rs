@@ -7,7 +7,7 @@ use sqlx::{Row, SqlitePool, sqlite::SqliteRow};
 use serde_json::{Value, json};
 
 use crate::domain::money::Money;
-use crate::domain::payment::{Details, TaxForm};
+use crate::domain::payment::{AccountNumber, Details, TaxForm};
 
 pub mod sqlx_outbox_repository;
 pub mod sqlx_payment_repository;
@@ -74,12 +74,12 @@ pub(crate) fn details_from_columns(kind: &str, details: &str) -> Result<Details,
             .ok_or_else(|| format!("{kind} details missing {name}"))
     };
     match kind {
-        "standard" => Details::standard(
-            field("title")?,
-            field("account_number")?,
-            field("recipient")?,
-        )
-        .map_err(|err| err.to_string()),
+        "standard" => {
+            let account_number =
+                AccountNumber::from(field("account_number")?).map_err(|err| err.to_string())?;
+            Details::standard(field("title")?, account_number, field("recipient")?)
+                .map_err(|err| err.to_string())
+        }
         "tax" => match field("form_symbol")?.as_str() {
             "VAT-7" => Ok(Details::tax(TaxForm::Vat7)),
             "PPL" => Ok(Details::tax(TaxForm::Ppl)),

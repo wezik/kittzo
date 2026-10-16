@@ -67,7 +67,7 @@ impl Service {
 mod tests {
     use super::*;
     use crate::domain::email::{Candidate, CandidateKind};
-    use crate::domain::payment::{Details, Payment, TaxForm};
+    use crate::domain::payment::{AccountNumber, Details, Payment, TaxForm};
     use crate::infra::persistence::connect;
     use async_trait::async_trait;
 
@@ -155,7 +155,7 @@ mod tests {
             vec![
                 Details::standard(
                     "Faktura 49/09/2026".into(),
-                    "61109010140000071219812874".into(),
+                    AccountNumber::from("61109010140000071219812874".into()).unwrap(),
                     "Biuro".into()
                 )
                 .unwrap(),
