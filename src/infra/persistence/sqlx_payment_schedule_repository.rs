@@ -3,16 +3,16 @@ use time::{Date, OffsetDateTime};
 use uuid::Uuid;
 
 use crate::domain::payment::Details;
-use crate::domain::payment_schedule::{PaymentSchedule, PaymentScheduleError, Recurrence};
+use crate::domain::payment_schedule::{PaymentSchedule, Recurrence};
 use crate::domain::version::Version;
-use crate::infra::persistence::unexpected;
+use crate::infra::persistence::{Error, unexpected};
 
 use super::{details_columns, details_from_columns, total_from_row};
 
 pub async fn create<'e, E>(
     executor: E,
     schedule: &PaymentSchedule,
-) -> Result<PaymentSchedule, PaymentScheduleError>
+) -> Result<PaymentSchedule, Error>
 where
     E: sqlx::Executor<'e, Database = Sqlite>,
 {
@@ -40,7 +40,7 @@ where
     .map_err(unexpected)?;
 
     if result.rows_affected() == 0 {
-        return Err(PaymentScheduleError::AlreadyExists);
+        return Err(Error::AlreadyExists);
     }
 
     tracing::info!(schedule_id = %schedule.id, "created payment schedule");
@@ -50,7 +50,7 @@ where
 pub async fn update(
     conn: &mut SqliteConnection,
     schedule: &PaymentSchedule,
-) -> Result<PaymentSchedule, PaymentScheduleError> {
+) -> Result<PaymentSchedule, Error> {
     let next_version = schedule.version.next();
     let (kind, details) = details_columns(&schedule.next_details);
 
@@ -84,9 +84,9 @@ pub async fn update(
             .is_some();
 
         return Err(if exists {
-            PaymentScheduleError::ConcurrentUpdate
+            Error::ConcurrentUpdate
         } else {
-            PaymentScheduleError::NotFound
+            Error::NotFound
         });
     }
 
@@ -97,7 +97,7 @@ pub async fn update(
     })
 }
 
-pub async fn find_all<'e, E>(executor: E) -> Result<Vec<PaymentSchedule>, PaymentScheduleError>
+pub async fn find_all<'e, E>(executor: E) -> Result<Vec<PaymentSchedule>, Error>
 where
     E: sqlx::Executor<'e, Database = Sqlite>,
 {
@@ -112,10 +112,7 @@ where
     )
 }
 
-pub async fn find_due<'e, E>(
-    executor: E,
-    today: Date,
-) -> Result<Vec<PaymentSchedule>, PaymentScheduleError>
+pub async fn find_due<'e, E>(executor: E, today: Date) -> Result<Vec<PaymentSchedule>, Error>
 where
     E: sqlx::Executor<'e, Database = Sqlite>,
 {
@@ -131,7 +128,7 @@ where
     )
 }
 
-pub async fn delete<'e, E>(executor: E, id: Uuid) -> Result<(), PaymentScheduleError>
+pub async fn delete<'e, E>(executor: E, id: Uuid) -> Result<(), Error>
 where
     E: sqlx::Executor<'e, Database = Sqlite>,
 {
@@ -141,7 +138,7 @@ where
         .await
         .map_err(unexpected)?;
     if result.rows_affected() == 0 {
-        return Err(PaymentScheduleError::NotFound);
+        return Err(Error::NotFound);
     }
     tracing::info!(schedule_id = %id, "deleted payment schedule");
     Ok(())
@@ -241,7 +238,7 @@ mod tests {
 
         let err = create(&pool, &schedule).await.unwrap_err();
 
-        assert!(matches!(err, PaymentScheduleError::AlreadyExists));
+        assert!(matches!(err, Error::AlreadyExists));
     }
 
     #[tokio::test]
@@ -278,7 +275,7 @@ mod tests {
 
         let err = update(&mut conn, &schedule).await.unwrap_err();
 
-        assert!(matches!(err, PaymentScheduleError::ConcurrentUpdate));
+        assert!(matches!(err, Error::ConcurrentUpdate));
     }
 
     #[tokio::test]
@@ -287,7 +284,7 @@ mod tests {
         let err = update(&mut pool.acquire().await.unwrap(), &schedule_due(today()))
             .await
             .unwrap_err();
-        assert!(matches!(err, PaymentScheduleError::NotFound));
+        assert!(matches!(err, Error::NotFound));
     }
 
     #[tokio::test]
@@ -305,6 +302,6 @@ mod tests {
     async fn delete_of_a_missing_schedule_is_not_found() {
         let pool = pool().await;
         let err = delete(&pool, Uuid::new_v4()).await.unwrap_err();
-        assert!(matches!(err, PaymentScheduleError::NotFound));
+        assert!(matches!(err, Error::NotFound));
     }
 }

@@ -2,9 +2,10 @@ use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::Path;
 
-use crate::domain::email::{EmailWatchConfig, SenderRule};
-use crate::domain::outbox::OutboxRelayConfig;
-use crate::domain::payment_schedule::PaymentScheduleJobConfig;
+use crate::app::email_watch_job::EmailWatchConfig;
+use crate::app::outbox::OutboxRelayConfig;
+use crate::app::payment_schedule_job::PaymentScheduleJobConfig;
+use crate::domain::email::SenderRule;
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]

@@ -16,13 +16,14 @@ use twilight_model::id::{
 };
 use uuid::Uuid;
 
+use crate::app::event_bus::EventBus;
+use crate::app::payment;
+use crate::app::run::retrying;
+use crate::app::startup_task::StartupTask;
 use crate::domain::event::{Codec, OutboxMessage};
-use crate::domain::event_bus::EventBus;
-use crate::domain::payment::{self, Ack, Error as PaymentError, Event, Payment, Source};
-use crate::domain::run::retrying;
-use crate::domain::startup_task::StartupTask;
+use crate::domain::payment::{Ack, Event, Payment, Source};
 use crate::infra::codec::JsonCodec;
-use crate::infra::persistence::sqlx_payment_repository as payment_repo;
+use crate::infra::persistence::{self, sqlx_payment_repository as payment_repo};
 
 const CONFIRMATIONS_CHANNEL: &str = "confirmations";
 const APPROVE_EMOJI: &str = "✅";
@@ -153,7 +154,7 @@ impl DiscordConsumer {
     async fn post_prompt(&self, payment_id: Uuid) -> Result<(), Failure> {
         let payment = match payment_repo::find(&self.pool, payment_id).await {
             Ok(payment) => payment,
-            Err(PaymentError::NotFound) => return Ok(()),
+            Err(persistence::Error::NotFound) => return Ok(()),
             Err(err) => {
                 tracing::warn!(%err, %payment_id, "failed to look up payment");
                 return Err(Failure::Retry);

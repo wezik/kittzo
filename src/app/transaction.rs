@@ -7,13 +7,13 @@ use crate::infra::persistence::Error;
 pub async fn start_tx(pool: &SqlitePool) -> Result<Transaction<'static, Sqlite>, Error> {
     pool.begin().await.map_err(|sqlx_err| {
         tracing::error!(%sqlx_err, "failed to start transaction");
-        Error
+        Error::Unexpected
     })
 }
 
 pub async fn commit_tx(tx: Transaction<'static, Sqlite>) -> Result<(), Error> {
     tx.commit().await.map_err(|sqlx_err| {
         tracing::error!(%sqlx_err, "failed to commit transaction");
-        Error
+        Error::Unexpected
     })
 }

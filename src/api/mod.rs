@@ -12,8 +12,8 @@ use tower::ServiceBuilder;
 use tower_http::services::ServeDir;
 use tower_http::set_header::SetResponseHeaderLayer;
 
-use crate::domain::payment::{self};
-use crate::domain::payment_schedule::PaymentScheduleService;
+use crate::app::payment;
+use crate::app::payment_schedule::PaymentScheduleService;
 
 #[derive(Clone)]
 pub struct AppState {

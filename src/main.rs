@@ -1,4 +1,5 @@
 mod api;
+mod app;
 mod domain;
 mod infra;
 
@@ -6,12 +7,14 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
 use api::AppState;
-use domain::email::{self, EmailWatchJob};
-use domain::event_bus::EventBus;
-use domain::outbox::OutboxRelayJob;
-use domain::payment;
-use domain::payment_schedule::{PaymentScheduleJob, PaymentScheduleService};
-use domain::startup_task::StartupTask;
+use app::email;
+use app::email_watch_job::EmailWatchJob;
+use app::event_bus::EventBus;
+use app::outbox::OutboxRelayJob;
+use app::payment;
+use app::payment_schedule::PaymentScheduleService;
+use app::payment_schedule_job::PaymentScheduleJob;
+use app::startup_task::StartupTask;
 use infra::Config;
 use infra::discord::{DiscordConsumer, DiscordReactionListener};
 use infra::event_bus::TokioEventBus;

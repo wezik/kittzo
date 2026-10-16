@@ -2,14 +2,13 @@ use time::{Date, OffsetDateTime};
 use uuid::Uuid;
 
 use crate::domain::{money::Money, version::Version};
-use crate::infra::persistence;
 
 mod details;
 mod event;
-mod service;
+mod query;
 pub use details::*;
 pub use event::*;
-pub use service::*;
+pub use query::*;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Payment {
@@ -115,12 +114,6 @@ impl Payment {
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
-    #[error("payment already exists")]
-    AlreadyExists,
-
-    #[error("payment not found")]
-    NotFound,
-
     #[error("payment account number is invalid")]
     InvalidAccountNumber,
 
@@ -129,12 +122,6 @@ pub enum Error {
 
     #[error("payment can't go from {from:?} to {to:?}")]
     InvalidTransition { from: String, to: String },
-
-    #[error("payment updated concurrently")]
-    ConcurrentUpdate,
-
-    #[error("unexpected persistence error")]
-    Persistence(#[from] persistence::Error),
 }
 
 #[cfg(test)]

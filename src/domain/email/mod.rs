@@ -5,12 +5,6 @@ use async_trait::async_trait;
 use crate::domain::money::Money;
 use crate::domain::payment::{AccountNumber, Details, TaxForm};
 
-mod service;
-pub use service::*;
-
-mod email_watch_job;
-pub use email_watch_job::*;
-
 #[derive(Clone, Debug, PartialEq)]
 pub struct Email {
     pub message_id: String,
