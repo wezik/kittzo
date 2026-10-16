@@ -191,7 +191,6 @@ document.getElementById("payments-body").addEventListener("click", async (e) => 
 // Schedules
 
 let schedulesById = {};
-let editingScheduleId = null;
 
 function renderSchedules(schedules) {
   schedulesById = Object.fromEntries(schedules.map((s) => [s.id, s]));
@@ -204,7 +203,6 @@ function renderSchedules(schedules) {
         <td>day ${s.recurrence.day_of_month}</td>
         <td>${formatDate(s.next_due_at)}</td>
         <td class="actions">
-          <button data-edit="${s.id}">Edit</button>
           <button class="danger" data-delete="${s.id}">Delete</button>
         </td>
       </tr>`,
@@ -213,35 +211,7 @@ function renderSchedules(schedules) {
   );
 }
 
-function setScheduleEditing(id) {
-  editingScheduleId = id;
-  const form = document.getElementById("schedule-form");
-  form.querySelector('button[type="submit"]').textContent = id ? "Save" : "Create";
-  form.querySelector('button[type="reset"]').hidden = !id;
-}
-
-function fillScheduleForm(s) {
-  const form = document.getElementById("schedule-form");
-  const fields = form.elements;
-  const places = decimals(s.total.currency);
-  fields.type.value = s.type;
-  fields.amount.value = (s.total.minor_amount / 10 ** places).toFixed(places);
-  fields.currency.value = s.total.currency;
-  fields.day_of_month.value = s.recurrence.day_of_month;
-  for (const [name, value] of Object.entries(s.details)) {
-    if (fields[name]) fields[name].value = value;
-  }
-  showKindFields(form);
-  form.scrollIntoView({ behavior: "smooth", block: "center" });
-}
-
 document.getElementById("schedules-body").addEventListener("click", async (e) => {
-  const edit = e.target.closest("button[data-edit]");
-  if (edit) {
-    fillScheduleForm(schedulesById[edit.dataset.edit]);
-    setScheduleEditing(edit.dataset.edit);
-    return;
-  }
   const remove = e.target.closest("button[data-delete]");
   if (!remove) return;
   const title = transferTitle(schedulesById[remove.dataset.delete]);
@@ -279,7 +249,8 @@ function transferBody(form) {
   };
 }
 
-for (const form of document.querySelectorAll("form")) {
+{
+  const form = document.getElementById("payment-form");
   form.elements.type.addEventListener("change", () => showKindFields(form));
   form.addEventListener("reset", () => setTimeout(() => showKindFields(form)));
   showKindFields(form);
@@ -294,18 +265,17 @@ document.getElementById("payment-form").addEventListener("submit", async (e) => 
 document.getElementById("schedule-form").addEventListener("submit", async (e) => {
   e.preventDefault();
   const form = new FormData(e.target);
+  const currency = form.get("currency");
   const body = {
-    ...transferBody(form),
+    total: { minor_amount: toMinorAmount(form.get("amount"), currency), currency },
+    title_template: form.get("title_template"),
+    account_number: form.get("account_number"),
+    recipient: form.get("recipient"),
     recurrence: { type: "monthly", day_of_month: Number(form.get("day_of_month")) },
   };
-  const saved = editingScheduleId
-    ? await api("PUT", `/payment-schedules/${editingScheduleId}`, body)
-    : await api("POST", "/payment-schedules", body);
-  if (saved) e.target.reset();
+  if (await api("POST", "/payment-schedules", body)) e.target.reset();
   refresh();
 });
-
-document.getElementById("schedule-form").addEventListener("reset", () => setScheduleEditing(null));
 
 // Refresh
 

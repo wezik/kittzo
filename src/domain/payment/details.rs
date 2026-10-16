@@ -59,11 +59,9 @@ pub enum TaxForm {
 impl Details {
     pub fn standard(
         title: String,
-        account_number: String,
+        account_number: AccountNumber,
         recipient: String,
     ) -> Result<Self, Error> {
-        // guards
-        let account_number = AccountNumber::from(account_number)?;
         if recipient.trim().is_empty() {
             return Err(Error::InvalidRecipient);
         }
@@ -84,7 +82,7 @@ impl Details {
 pub fn some_standard_details() -> Details {
     Details::standard(
         "foo".into(),
-        "61109010140000071219812874".into(),
+        AccountNumber::from("61109010140000071219812874".into()).expect("valid account number"),
         "someone".into(),
     )
     .expect("valid details")

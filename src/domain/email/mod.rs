@@ -3,7 +3,7 @@ use std::collections::HashSet;
 use async_trait::async_trait;
 
 use crate::domain::money::Money;
-use crate::domain::payment::{Details, TaxForm};
+use crate::domain::payment::{AccountNumber, Details, TaxForm};
 
 mod service;
 pub use service::*;
@@ -116,7 +116,9 @@ pub fn prepare(
             if title.trim().is_empty() {
                 return Err(Skip::NoTitle);
             }
-            Details::standard(title, account_number.clone(), recipient.clone())
+            let account_number = AccountNumber::from(account_number.clone())
+                .map_err(|err| Skip::Details(err.to_string()))?;
+            Details::standard(title, account_number, recipient.clone())
                 .map_err(|err| Skip::Details(err.to_string()))?
         }
         CandidateKind::Tax { form } => Details::tax(match form.trim() {

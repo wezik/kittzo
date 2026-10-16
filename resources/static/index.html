@@ -313,23 +313,14 @@
         <h2>Payment schedules</h2>
       </div>
       <form id="schedule-form" class="inline-form">
-        <label>Kind<select name="type">
-          <option value="standard">Standard</option>
-          <option value="tax">Tax</option>
-        </select></label>
         <label>Amount<input name="amount" inputmode="decimal" placeholder="19.99" required /></label>
         <label>Currency<input name="currency" placeholder="PLN" value="PLN" required /></label>
         <label>Day of month<input name="day_of_month" type="number" min="1" max="31" placeholder="1" required /></label>
         <div class="kind-fields">
-          <label data-kind="standard">Title<input name="title" placeholder="Czynsz {MM}/{YYYY}" title="{MM} and {YYYY} are filled in from each due date" required /></label>
-          <label data-kind="standard">Account number<input name="account_number" placeholder="26 digits" required /></label>
-          <label data-kind="standard">Recipient<input name="recipient" placeholder="name and address" required /></label>
-          <label data-kind="tax" hidden>Form<select name="form_symbol">
-            <option value="VAT-7">VAT-7</option>
-            <option value="PPL">PPE</option>
-          </select></label>
+          <label>Title<input name="title_template" placeholder="Czynsz {MM}/{YYYY}" title="{MM} and {YYYY} are filled in from each due date" required /></label>
+          <label>Account number<input name="account_number" placeholder="26 digits" required /></label>
+          <label>Recipient<input name="recipient" placeholder="name and address" required /></label>
           <button type="submit">Create</button>
-          <button type="reset" hidden>Cancel</button>
         </div>
       </form>
       <div class="table-scroll">

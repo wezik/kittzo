@@ -177,14 +177,12 @@ fn substitute_env_vars(input: &str) -> String {
 #[serde(default)]
 struct TomlPaymentScheduleConfig {
     poll_interval_secs: u64,
-    retry_after_secs: u64,
 }
 
 impl Default for TomlPaymentScheduleConfig {
     fn default() -> Self {
         Self {
             poll_interval_secs: 3600,
-            retry_after_secs: 1800,
         }
     }
 }
@@ -193,7 +191,6 @@ impl From<TomlPaymentScheduleConfig> for PaymentScheduleJobConfig {
     fn from(toml: TomlPaymentScheduleConfig) -> Self {
         PaymentScheduleJobConfig {
             poll_interval_secs: toml.poll_interval_secs,
-            retry_after_secs: toml.retry_after_secs,
         }
     }
 }
@@ -290,7 +287,6 @@ mod tests {
     fn payment_schedule_section_falls_back_to_defaults_when_absent() {
         let cfg = Config::parse("server_port = 1234\n");
         assert_eq!(cfg.payment_schedule().poll_interval_secs, 3600);
-        assert_eq!(cfg.payment_schedule().retry_after_secs, 1800);
     }
 
     #[test]
@@ -304,10 +300,8 @@ mod tests {
 
     #[test]
     fn payment_schedule_section_parses_when_present() {
-        let cfg =
-            Config::parse("[payment_schedule]\npoll_interval_secs = 60\nretry_after_secs = 30\n");
+        let cfg = Config::parse("[payment_schedule]\npoll_interval_secs = 60\n");
         assert_eq!(cfg.payment_schedule().poll_interval_secs, 60);
-        assert_eq!(cfg.payment_schedule().retry_after_secs, 30);
     }
 
     #[test]

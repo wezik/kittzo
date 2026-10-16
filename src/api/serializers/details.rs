@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::domain::payment::{Details, TaxForm};
+use crate::domain::payment::{AccountNumber, Details, TaxForm};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(try_from = "DetailsRepr", into = "DetailsRepr")]
@@ -36,7 +36,10 @@ impl TryFrom<DetailsRepr> for DetailsDto {
                 title,
                 account_number,
                 recipient,
-            } => Details::standard(title, account_number, recipient).map_err(|err| err.to_string()),
+            } => {
+                let number = AccountNumber::from(account_number).map_err(|err| err.to_string())?;
+                Details::standard(title, number, recipient).map_err(|err| err.to_string())
+            }
             DetailsRepr::Tax { form_symbol } => Ok(Details::tax(match form_symbol {
                 TaxFormRepr::Vat7 => TaxForm::Vat7,
                 TaxFormRepr::Ppl => TaxForm::Ppl,

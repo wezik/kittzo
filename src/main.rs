@@ -10,16 +10,13 @@ use domain::email::{self, EmailWatchJob};
 use domain::event_bus::EventBus;
 use domain::outbox::OutboxRelayJob;
 use domain::payment;
-use domain::payment_schedule::{
-    PaymentScheduleJob, PaymentScheduleRepository, PaymentScheduleService,
-};
+use domain::payment_schedule::{PaymentScheduleJob, PaymentScheduleService};
 use domain::startup_task::StartupTask;
 use infra::Config;
 use infra::discord::{DiscordConsumer, DiscordReactionListener};
 use infra::event_bus::TokioEventBus;
 use infra::imap::GmailMailbox;
 use infra::openrouter::OpenRouterParser;
-use infra::persistence::sqlx_payment_schedule_repository::SqlitePaymentScheduleRepository;
 use infra::tray::PendingAckWatch;
 
 fn main() {
@@ -49,16 +46,12 @@ async fn serve(config: Config, pending_ack: Arc<AtomicBool>) {
         .await
         .expect("failed to connect to database"); // intentional panic, db is a necessary dependency
 
-    let schedule_repo: Arc<dyn PaymentScheduleRepository> =
-        Arc::new(SqlitePaymentScheduleRepository::new(pool.clone()));
-
     let payment_service = Arc::new(payment::Service::new(pool.clone()));
-    let schedule_service = Arc::new(PaymentScheduleService::new(schedule_repo));
+    let schedule_service = Arc::new(PaymentScheduleService::new(pool.clone()));
 
     let mut tasks: Vec<Arc<dyn StartupTask>> = vec![
         Arc::new(PaymentScheduleJob::new(
             schedule_service.clone(),
-            payment_service.clone(),
             config.payment_schedule(),
         )),
         Arc::new(PendingAckWatch::new(payment_service.clone(), pending_ack)),
