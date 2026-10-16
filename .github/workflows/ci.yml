@@ -11,6 +11,7 @@ env:
 
 jobs:
   ci:
+    name: "Build & Test"
     strategy:
       fail-fast: false
       matrix:
