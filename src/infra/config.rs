@@ -13,6 +13,7 @@ pub struct Config {
     pub log_level: String,
     pub discord: DiscordConfig,
     pub email: EmailConfig,
+    pub openrouter: OpenRouterConfig,
     payment_schedule: TomlPaymentScheduleConfig,
     outbox: TomlOutboxConfig,
 }
@@ -24,6 +25,7 @@ impl Default for Config {
             log_level: "info".to_string(),
             discord: DiscordConfig::default(),
             email: EmailConfig::default(),
+            openrouter: OpenRouterConfig::default(),
             payment_schedule: TomlPaymentScheduleConfig::default(),
             outbox: TomlOutboxConfig::default(),
         }
@@ -59,8 +61,6 @@ pub struct EmailConfig {
     pub app_password: String,
     pub label: String,
     pub poll_interval_secs: u64,
-    pub openrouter_api_key: String,
-    pub model: String,
 }
 
 impl Default for EmailConfig {
@@ -71,23 +71,39 @@ impl Default for EmailConfig {
             app_password: String::new(),
             label: "kittzo/payments".to_string(),
             poll_interval_secs: EmailWatchConfig::default().poll_interval_secs,
-            openrouter_api_key: String::new(),
-            model: "z-ai/glm-5.3-flash".to_string(),
         }
     }
 }
 
 impl EmailConfig {
     pub fn is_configured(&self) -> bool {
-        !self.imap_user.is_empty()
-            && !self.app_password.is_empty()
-            && !self.openrouter_api_key.is_empty()
+        !self.imap_user.is_empty() && !self.app_password.is_empty()
     }
 
     pub fn watch(&self) -> EmailWatchConfig {
         EmailWatchConfig {
             poll_interval_secs: self.poll_interval_secs,
             ..EmailWatchConfig::default()
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct OpenRouterConfig {
+    pub api_key: String,
+    pub url: String,
+    pub model: String,
+    pub pdf_engine: String,
+}
+
+impl Default for OpenRouterConfig {
+    fn default() -> Self {
+        Self {
+            api_key: String::new(),
+            url: "https://openrouter.ai/api/v1/chat/completions".to_string(),
+            model: "z-ai/glm-5.3-flash".to_string(),
+            pdf_engine: "mistral-ocr".to_string(),
         }
     }
 }
@@ -216,13 +232,37 @@ mod tests {
         let cfg = Config::parse(
             r#"
             [email]
-            openrouter_api_key = "sk-test"
+            imap_user = "me@gmail.com"
             "#,
         );
-        assert_eq!(cfg.email.openrouter_api_key, "sk-test");
-        assert_eq!(cfg.email.model, "z-ai/glm-5.3-flash");
+        assert_eq!(cfg.email.imap_user, "me@gmail.com");
         assert_eq!(cfg.email.label, "kittzo/payments");
         assert!(!cfg.email.is_configured());
+    }
+
+    #[test]
+    fn parses_openrouter_section() {
+        let cfg = Config::parse(
+            r#"
+            [openrouter]
+            api_key = "sk-test"
+            model = "other/model"
+            "#,
+        );
+        assert_eq!(cfg.openrouter.api_key, "sk-test");
+        assert_eq!(cfg.openrouter.model, "other/model");
+        assert_eq!(
+            cfg.openrouter.url,
+            "https://openrouter.ai/api/v1/chat/completions"
+        );
+        assert_eq!(cfg.openrouter.pdf_engine, "mistral-ocr");
+    }
+
+    #[test]
+    fn committed_kittzo_toml_parses() {
+        let cfg = Config::parse(include_str!("../../kittzo.toml"));
+        assert_eq!(cfg.server_port, 7878);
+        assert_eq!(cfg.openrouter.model, "z-ai/glm-5.3-flash");
     }
 
     #[test]
