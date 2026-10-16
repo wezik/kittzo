@@ -10,8 +10,9 @@ use uuid::Uuid;
 
 use crate::api::serializers::details::DetailsDto;
 use crate::api::serializers::money::MoneyDto;
+use crate::app::payment_schedule::PaymentScheduleError;
 use crate::domain::payment::AccountNumber;
-use crate::domain::payment_schedule::{PaymentSchedule, PaymentScheduleError, Recurrence};
+use crate::domain::payment_schedule::{PaymentSchedule, Recurrence};
 
 use super::AppState;
 use super::serializers::rfc3339::OffsetDateTimeDto;

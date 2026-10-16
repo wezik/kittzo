@@ -7,12 +7,8 @@ use super::money::Money;
 use super::payment::Details;
 use super::version::Version;
 
-mod payment_schedule_job;
-mod payment_schedule_service;
 mod recurrence;
 
-pub use payment_schedule_job::*;
-pub use payment_schedule_service::*;
 pub use recurrence::*;
 
 #[derive(Clone, Debug, PartialEq)]

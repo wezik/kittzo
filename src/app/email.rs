@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
-use crate::domain::payment::{self, Source};
-
-use super::{Email, EmailParser, ParseError, SenderRule, prepare};
+use crate::app::payment;
+use crate::domain::email::{Email, EmailParser, ParseError, SenderRule, prepare};
+use crate::domain::payment::Source;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {

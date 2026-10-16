@@ -4,10 +4,11 @@ use std::time::Duration;
 use async_trait::async_trait;
 use sqlx::SqlitePool;
 
-use crate::domain::startup_task::StartupTask;
+use crate::app::startup_task::StartupTask;
 use crate::infra::persistence::sqlx_processed_email_repository as processed;
 
-use super::{Mailbox, Service};
+use crate::app::email::Service;
+use crate::domain::email::Mailbox;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct EmailWatchConfig {
@@ -130,10 +131,10 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use super::*;
+    use crate::app::payment;
     use crate::domain::email::{
         Candidate, CandidateKind, Email, EmailParser, MailboxError, ParseError,
     };
-    use crate::domain::payment;
     use crate::infra::persistence::connect;
 
     struct FakeMailbox(Vec<Email>);

@@ -4,9 +4,9 @@ use std::time::Duration;
 use async_trait::async_trait;
 use time::OffsetDateTime;
 
-use crate::domain::startup_task::StartupTask;
+use crate::app::startup_task::StartupTask;
 
-use super::PaymentScheduleService;
+use crate::app::payment_schedule::PaymentScheduleService;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct PaymentScheduleJobConfig {

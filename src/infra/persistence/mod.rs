@@ -15,12 +15,23 @@ pub mod sqlx_payment_schedule_repository;
 pub mod sqlx_processed_email_repository;
 
 #[derive(Debug, PartialEq, thiserror::Error)]
-#[error("unexpected persistence error")]
-pub struct Error;
+pub enum Error {
+    #[error("already exists")]
+    AlreadyExists,
+
+    #[error("not found")]
+    NotFound,
+
+    #[error("updated concurrently")]
+    ConcurrentUpdate,
+
+    #[error("unexpected persistence error")]
+    Unexpected,
+}
 
 pub(crate) fn unexpected(sqlx_err: sqlx::Error) -> Error {
     tracing::error!(%sqlx_err, "unexpected sqlx error");
-    Error
+    Error::Unexpected
 }
 
 // one connection avoids `SQLITE_BUSY` contention between writers.

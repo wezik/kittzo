@@ -2,14 +2,13 @@ use sqlx::SqlitePool;
 use time::Date;
 use uuid::Uuid;
 
+use crate::app::transaction::{commit_tx, start_tx};
 use crate::domain::money::Money;
 use crate::domain::payment::{self, AccountNumber};
-use crate::domain::transaction::{commit_tx, start_tx};
+use crate::domain::payment_schedule::{PaymentSchedule, Recurrence};
 use crate::infra::persistence::{
     self, sqlx_outbox_repository, sqlx_payment_repository, sqlx_payment_schedule_repository,
 };
-
-use super::{PaymentSchedule, Recurrence};
 
 pub struct PaymentScheduleService {
     pool: SqlitePool,
@@ -30,7 +29,18 @@ pub enum PaymentScheduleError {
     Payment(#[from] payment::Error),
 
     #[error("unexpected persistence error")]
-    Persistence(#[from] persistence::Error),
+    Persistence,
+}
+
+impl From<persistence::Error> for PaymentScheduleError {
+    fn from(err: persistence::Error) -> Self {
+        match err {
+            persistence::Error::AlreadyExists => PaymentScheduleError::AlreadyExists,
+            persistence::Error::NotFound => PaymentScheduleError::NotFound,
+            persistence::Error::ConcurrentUpdate => PaymentScheduleError::ConcurrentUpdate,
+            persistence::Error::Unexpected => PaymentScheduleError::Persistence,
+        }
+    }
 }
 
 impl PaymentScheduleService {
@@ -55,15 +65,15 @@ impl PaymentScheduleService {
             recurrence,
             starts_at,
         )?;
-        sqlx_payment_schedule_repository::create(&self.pool, &schedule).await
+        Ok(sqlx_payment_schedule_repository::create(&self.pool, &schedule).await?)
     }
 
     pub async fn find_all(&self) -> Result<Vec<PaymentSchedule>, PaymentScheduleError> {
-        sqlx_payment_schedule_repository::find_all(&self.pool).await
+        Ok(sqlx_payment_schedule_repository::find_all(&self.pool).await?)
     }
 
     pub async fn delete(&self, id: Uuid) -> Result<(), PaymentScheduleError> {
-        sqlx_payment_schedule_repository::delete(&self.pool, id).await
+        Ok(sqlx_payment_schedule_repository::delete(&self.pool, id).await?)
     }
 
     /// Returns how many payments were created. A schedule that fails is logged and left as

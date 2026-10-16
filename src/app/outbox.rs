@@ -5,7 +5,7 @@ use async_trait::async_trait;
 use sqlx::SqlitePool;
 use time::SignedDuration;
 
-use crate::domain::event_bus::EventBus;
+use crate::app::event_bus::EventBus;
 use crate::infra::persistence::{self, sqlx_outbox_repository as outbox_repo};
 
 use super::startup_task::StartupTask;

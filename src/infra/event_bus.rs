@@ -1,7 +1,7 @@
 use tokio::sync::broadcast;
 
+use crate::app::event_bus::EventBus;
 use crate::domain::event::OutboxMessage;
-use crate::domain::event_bus::EventBus;
 
 /// ponytail: fixed capacity ring buffer - a subscriber that falls behind by more than this
 /// many messages gets `Lagged` and skips ahead, rather than the bus growing unbounded.

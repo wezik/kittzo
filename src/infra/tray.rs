@@ -9,8 +9,8 @@ use tao::event_loop::{ControlFlow, EventLoopBuilder};
 use tray_icon::menu::{Menu, MenuEvent, MenuItem};
 use tray_icon::{Icon, TrayIcon, TrayIconBuilder};
 
-use crate::domain::payment;
-use crate::domain::startup_task::StartupTask;
+use crate::app::payment;
+use crate::app::startup_task::StartupTask;
 
 const ICON_BYTES: &[u8] = include_bytes!("../../resources/icons/kittzo2_32.png");
 const BELL_ICON_BYTES: &[u8] = include_bytes!("../../resources/icons/kittzo2_bell_32.png");

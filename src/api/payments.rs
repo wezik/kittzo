@@ -9,6 +9,7 @@ use uuid::Uuid;
 use crate::api::serializers::details::DetailsDto;
 use crate::api::serializers::money::MoneyDto;
 use crate::api::serializers::version::VersionDto;
+use crate::app;
 use crate::domain::payment::{self, ListQueryAckFilter, ListQueryPaidFilter, Payment};
 
 use super::AppState;
@@ -115,18 +116,19 @@ impl From<payment::Source> for PaymentSourceDto {
     }
 }
 
-pub(super) fn map_err_to_response(err: payment::Error) -> Response {
+pub(super) fn map_err_to_response(err: app::payment::Error) -> Response {
+    use app::payment::Error;
     match err {
-        payment::Error::AlreadyExists => StatusCode::CONFLICT.into_response(),
-        payment::Error::NotFound => StatusCode::NOT_FOUND.into_response(),
-        payment::Error::InvalidAccountNumber | payment::Error::InvalidRecipient => {
+        Error::AlreadyExists => StatusCode::CONFLICT.into_response(),
+        Error::NotFound => StatusCode::NOT_FOUND.into_response(),
+        Error::Domain(payment::Error::InvalidAccountNumber | payment::Error::InvalidRecipient) => {
             (StatusCode::UNPROCESSABLE_ENTITY, err.to_string()).into_response()
         }
-        payment::Error::InvalidTransition { .. } | payment::Error::ConcurrentUpdate => {
+        Error::Domain(payment::Error::InvalidTransition { .. }) | Error::ConcurrentUpdate => {
             (StatusCode::CONFLICT, err.to_string()).into_response()
         }
         // NOTE: For now map those directly
-        payment::Error::Persistence(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+        Error::Persistence => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     }
 }
 
@@ -222,7 +224,7 @@ async fn post_ack(
     transition_response(state.payment_service.ack(id, body.accept).await)
 }
 
-fn transition_response(result: Result<Payment, payment::Error>) -> Response {
+fn transition_response(result: Result<Payment, app::payment::Error>) -> Response {
     match result {
         Ok(payment) => Json(PaymentResponse::from(payment)).into_response(),
         Err(err) => map_err_to_response(err),
