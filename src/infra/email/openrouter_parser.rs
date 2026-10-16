@@ -11,8 +11,8 @@ use crate::domain::{
     money::Money,
     payment::{self, AccountNumber, Details, Payment, Source, TaxForm},
 };
+use crate::infra::config::OpenRouterConfig;
 
-const URL: &str = "https://openrouter.ai/api/v1/chat/completions";
 const TIMEOUT: Duration = Duration::from_secs(120);
 
 const PROMPT: &str = r#"You extract the payments the recipient of an email has to make.
@@ -40,16 +40,14 @@ the missing values may be in an attachment."#;
 
 pub struct OpenRouterParser {
     client: reqwest::Client,
-    api_key: String,
-    model: String,
+    config: OpenRouterConfig,
 }
 
 impl OpenRouterParser {
-    pub fn new(api_key: String, model: String) -> Self {
+    pub fn new(config: OpenRouterConfig) -> Self {
         Self {
             client: reqwest::Client::new(),
-            api_key,
-            model,
+            config,
         }
     }
 
@@ -92,7 +90,7 @@ impl OpenRouterParser {
         }
 
         let mut request = json!({
-            "model": self.model,
+            "model": self.config.model,
             "temperature": 0,
             "messages": [
                 {"role": "system", "content": PROMPT},
@@ -104,7 +102,8 @@ impl OpenRouterParser {
             },
         });
         if previous.is_some() {
-            request["plugins"] = json!([{"id": "file-parser", "pdf": {"engine": "mistral-ocr"}}]);
+            request["plugins"] =
+                json!([{"id": "file-parser", "pdf": {"engine": self.config.pdf_engine}}]);
         }
         request
     }
@@ -112,8 +111,8 @@ impl OpenRouterParser {
     async fn complete(&self, request: &Value) -> Result<String, email::Error> {
         let response = self
             .client
-            .post(URL)
-            .bearer_auth(&self.api_key)
+            .post(&self.config.url)
+            .bearer_auth(&self.config.api_key)
             .timeout(TIMEOUT)
             .json(request)
             .send()
@@ -392,7 +391,7 @@ mod tests {
 
     #[test]
     fn first_request_is_text_only() {
-        let parser = OpenRouterParser::new("key".into(), "z-ai/glm-5.3-flash".into());
+        let parser = OpenRouterParser::new(OpenRouterConfig::default());
 
         let request = parser.request(&email(vec![pdf()]), None);
 
@@ -409,7 +408,7 @@ mod tests {
 
     #[test]
     fn without_pdfs_the_first_request_falls_back_to_the_subject() {
-        let parser = OpenRouterParser::new("key".into(), "z-ai/glm-5.3-flash".into());
+        let parser = OpenRouterParser::new(OpenRouterConfig::default());
 
         let request = parser.request(&email(vec![]), None);
 
@@ -421,7 +420,7 @@ mod tests {
 
     #[test]
     fn follow_up_request_sends_the_pdfs_and_the_first_result() {
-        let parser = OpenRouterParser::new("key".into(), "z-ai/glm-5.3-flash".into());
+        let parser = OpenRouterParser::new(OpenRouterConfig::default());
 
         let request = parser.request(&email(vec![pdf()]), Some(r#"{"payments": []}"#));
 
@@ -449,8 +448,10 @@ mod tests {
     }
 
     fn live_parser() -> OpenRouterParser {
-        let key = std::env::var("KITTZO_OPENROUTER_API_KEY").expect("KITTZO_OPENROUTER_API_KEY");
-        OpenRouterParser::new(key, "z-ai/glm-5.3-flash".into())
+        OpenRouterParser::new(OpenRouterConfig {
+            api_key: std::env::var("KITTZO_OPENROUTER_API_KEY").expect("KITTZO_OPENROUTER_API_KEY"),
+            ..OpenRouterConfig::default()
+        })
     }
 
     #[tokio::test]

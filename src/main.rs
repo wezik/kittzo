@@ -84,11 +84,8 @@ async fn serve(config: Config, pending_ack: Arc<AtomicBool>) {
     }
 
     let email_config = &config.email;
-    if email_config.is_configured() {
-        let parser = Arc::new(OpenRouterParser::new(
-            email_config.openrouter_api_key.clone(),
-            email_config.model.clone(),
-        ));
+    if email_config.is_configured() && !config.openrouter.api_key.is_empty() {
+        let parser = Arc::new(OpenRouterParser::new(config.openrouter.clone()));
         let email_service = Arc::new(email::Service::new(parser, payment_service.clone()));
         let mailbox = Arc::new(GmailMailbox::new(
             email_config.imap_host.clone(),
@@ -104,7 +101,7 @@ async fn serve(config: Config, pending_ack: Arc<AtomicBool>) {
         )));
     } else {
         tracing::warn!(
-            "email watcher off: set [email] imap_user, app_password and openrouter_api_key to enable it"
+            "email watcher off: set [email] imap_user, app_password and [openrouter] api_key to enable it"
         );
     }
 

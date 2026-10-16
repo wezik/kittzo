@@ -1,0 +1,32 @@
+# Secrets come from env vars (`${NAME}`, see .env.example); mise loads .env.
+server_port = 7878
+log_level = "info"
+
+[discord]
+token = "${KITTZO_DISCORD_TOKEN}"
+reconcile_interval_secs = 300
+
+[discord.channels]
+# Discord channel id, found via Developer Mode > right-click channel > Copy Channel ID
+confirmations = "${KITTZO_DISCORD_CHANNEL}"
+
+[payment_schedule]
+poll_interval_secs = 10
+
+[outbox]
+poll_interval_secs = 1
+retry_after_secs = 30
+batch_limit = 100
+
+[email]
+imap_host = "imap.gmail.com"
+imap_user = "${KITTZO_IMAP_USER}"
+app_password = "${KITTZO_IMAP_APP_PASSWORD}"
+label = "${KITTZO_IMAP_LABEL}"
+poll_interval_secs = 30
+
+[openrouter]
+api_key = "${KITTZO_OPENROUTER_API_KEY}"
+url = "https://openrouter.ai/api/v1/chat/completions"
+model = "z-ai/glm-5.3-flash"
+pdf_engine = "mistral-ocr"
