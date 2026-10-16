@@ -8,3 +8,4 @@
 # payment scripts: local-only, they encode how the user pays things
 /scripts/
 __pycache__/
+/.env
