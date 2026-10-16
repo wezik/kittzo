@@ -1,4 +1,3 @@
 * text=auto eol=lf
 *.ico binary
 *.png binary
-resources/migrations/*.sql -text
