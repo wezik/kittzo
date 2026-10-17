@@ -181,7 +181,7 @@ where
     }
     sql.push_str(" ORDER BY created_at");
 
-    sqlx::query_as::<_, PaymentRow>(&sql)
+    sqlx::query_as::<_, PaymentRow>(sqlx::AssertSqlSafe(sql))
         .fetch_all(executor)
         .await
         .map_err(unexpected)?
