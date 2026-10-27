@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 
 use async_trait::async_trait;
-use mail_parser::{MessageParser, MimeHeaders};
+use mail_parser::MessageParser;
 use uuid::Uuid;
 
 use crate::domain::email::{Email, Mailbox, MailboxError, Pdf};
@@ -126,7 +126,7 @@ fn email_from_raw(message_id: String, raw: &[u8]) -> Email {
             ct.subtype()
                 .is_some_and(|sub| sub.eq_ignore_ascii_case("pdf"))
         }) || name.to_lowercase().ends_with(".pdf");
-        let bytes = attachment.contents();
+        let bytes = attachment.decoded();
         if !is_pdf {
             attachments.push(format!("{name} (skipped, not a pdf)"));
         } else if pdf_bytes + bytes.len() > PDF_LIMIT {
