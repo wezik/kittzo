@@ -1,0 +1,62 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: "Create release"
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Create release
+        run: gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --generate-notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+  build:
+    name: "Build ${{ matrix.target }}"
+    needs: release
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-2025
+            target: windows-x86_64
+          - os: ubuntu-24.04
+            target: linux-x86_64
+    runs-on: ${{ matrix.os }}
+    env:
+      PACKAGE: kittzo-${{ github.ref_name }}-${{ matrix.target }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install tray dependencies # linux requires specific deps
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libgtk-3-dev libxdo-dev libayatana-appindicator3-dev
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master 2026-10-16
+        with:
+          toolchain: "1.99.1"
+      - name: Build
+        run: cargo build --release --locked
+      - name: Package
+        shell: bash
+        run: |
+          mkdir -p "$PACKAGE/resources"
+          cp -r resources/static "$PACKAGE/resources/"
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            cp target/release/kittzo.exe "$PACKAGE/"
+            7z a "$PACKAGE.zip" "$PACKAGE" > /dev/null
+            echo "ASSET=$PACKAGE.zip" >> "$GITHUB_ENV"
+          else
+            cp target/release/kittzo "$PACKAGE/"
+            tar -czf "$PACKAGE.tar.gz" "$PACKAGE"
+            echo "ASSET=$PACKAGE.tar.gz" >> "$GITHUB_ENV"
+          fi
+      - name: Upload to release
+        shell: bash
+        run: gh release upload "$GITHUB_REF_NAME" "$ASSET" --repo "$GITHUB_REPOSITORY"
+        env:
+          GH_TOKEN: ${{ github.token }}
