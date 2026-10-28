@@ -100,7 +100,7 @@ Routes stay thin. They parse the request, call a service and map the result. Uni
 > [!WARNING]
 > Work in progress. Releases don't include this feature yet.
 
-`scripts/` holds local Python scripts that pay confirmed payments. A script can drive a bank's website, for example. The folder is gitignored. It encodes how the user pays and can hold a logged-in browser session.
+`scripts/` holds local Python scripts that process confirmed payments. A script can drive a bank's website, for example. The folder is gitignored. It encodes how the user pays and can hold a logged-in browser session.
 
 - `scripts/run.py` is the entry point. It lists the scripts and runs the one you pick.
 - The tray's "Run payment script" item runs it with `scripts/.venv`.
