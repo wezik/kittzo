@@ -1,6 +1,6 @@
 use serde::Deserialize;
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::app::email_watch_job::EmailWatchConfig;
 use crate::app::outbox::OutboxRelayConfig;
@@ -109,6 +109,19 @@ impl Default for OpenRouterConfig {
 }
 
 const DEFAULT_PATH: &str = "kittzo.toml";
+
+pub fn enter_home_dir() {
+    let dir = std::env::var_os("KITTZO_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            let exe = std::env::current_exe().expect("failed to locate the executable");
+            exe.parent()
+                .expect("executable has no parent dir")
+                .to_path_buf()
+        });
+    std::env::set_current_dir(&dir).expect("failed to enter the kittzo home dir");
+    tracing::info!(dir = %dir.display(), "using home dir");
+}
 
 impl Config {
     pub fn load() -> Config {

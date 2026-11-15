@@ -40,7 +40,7 @@ The UI is at http://127.0.0.1:7878. The tray's "Open UI" item opens it too.
 
 Config lives in `kittzo.toml`. Kittzo replaces `${NAME}` in it with the env var `NAME`. That keeps secrets out of git.
 
-Kittzo looks for its files in the working directory. Start it from the repo root.
+Kittzo looks for its files (`kittzo.toml`, `kittzo.db`, `resources/static/`, `scripts/`) in its home dir: `KITTZO_HOME` if set, else the directory holding the executable. `mise run dev` sets `KITTZO_HOME` to the repo root, so each worktree runs with its own config and database.
 
 `RUST_LOG` sets the log filter.
 
