@@ -6,5 +6,6 @@ pub mod payment;
 pub mod payment_schedule;
 pub mod payment_schedule_job;
 pub mod run;
+pub mod settings;
 pub mod startup_task;
 pub mod transaction;

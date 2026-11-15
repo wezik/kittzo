@@ -51,6 +51,9 @@
     margin: 0;
   }
 
+  .tabs { margin-left: auto; display: flex; gap: 0.5em; }
+  .tabs button[aria-selected="true"] { background: var(--text); color: #fff; }
+
   .tagline {
     margin: 0;
     font-size: 13px;
@@ -267,7 +270,13 @@
     <header class="site-header">
       <h1>kittzo</h1>
       <p class="tagline">payments &amp; approvals</p>
+      <nav class="tabs">
+        <button type="button" data-tab="payments" aria-selected="true">Payments</button>
+        <button type="button" data-tab="settings" aria-selected="false">Settings</button>
+      </nav>
     </header>
+
+    <main id="tab-payments">
 
     <section class="panel">
       <div class="panel-header">
@@ -332,6 +341,26 @@
       </div>
       <p class="empty-state" id="schedules-empty" hidden>No schedules yet.</p>
     </section>
+    </main>
+
+    <main id="tab-settings" hidden>
+      <form id="settings-form">
+        <section class="panel">
+          <div class="panel-header"><h2>Discord</h2></div>
+          <div class="inline-form" data-group="discord"></div>
+        </section>
+        <section class="panel">
+          <div class="panel-header"><h2>Email</h2></div>
+          <div class="inline-form" data-group="imap"></div>
+        </section>
+        <section class="panel">
+          <div class="panel-header"><h2>OpenRouter</h2></div>
+          <div class="inline-form" data-group="openrouter"></div>
+        </section>
+        <div class="inline-form"><button type="submit">Save</button></div>
+      </form>
+      <p class="empty-state">Secrets are kept in the OS keyring and never shown again. Locked fields are set by environment variables. Changes apply within a poll interval, no restart needed.</p>
+    </main>
   </div>
 
   <script src="app.js"></script>

@@ -3,6 +3,7 @@ mod dev_sandbox;
 mod payment_schedules;
 mod payments;
 mod serializers;
+mod settings;
 
 use std::sync::Arc;
 
@@ -14,18 +15,21 @@ use tower_http::set_header::SetResponseHeaderLayer;
 
 use crate::app::payment;
 use crate::app::payment_schedule::PaymentScheduleService;
+use crate::app::settings::SettingsService;
 
 #[derive(Clone)]
 pub struct AppState {
     pub payment_service: Arc<payment::Service>,
     pub schedule_service: Arc<PaymentScheduleService>,
+    pub settings: Arc<SettingsService>,
 }
 
 pub async fn serve(addr: &str, state: AppState) -> std::io::Result<()> {
     let router = Router::new()
         .route("/health", get(health))
         .merge(payments::router())
-        .merge(payment_schedules::router());
+        .merge(payment_schedules::router())
+        .merge(settings::router());
     #[cfg(debug_assertions)]
     let router = router.merge(dev_sandbox::router());
     let router = router.with_state(state).fallback_service(

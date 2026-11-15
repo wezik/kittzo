@@ -6,6 +6,7 @@ pub mod event_bus;
 pub mod imap;
 pub mod logging;
 pub mod persistence;
+pub mod secrets;
 pub mod tray;
 
 pub use config::*;
