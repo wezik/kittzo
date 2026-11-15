@@ -119,7 +119,8 @@ pub fn enter_home_dir() {
                 .expect("executable has no parent dir")
                 .to_path_buf()
         });
-    std::env::set_current_dir(&dir).expect("failed to enter the kittzo home dir");
+    std::env::set_current_dir(&dir)
+        .unwrap_or_else(|e| panic!("cannot enter home dir {}: {e}", dir.display()));
     tracing::info!(dir = %dir.display(), "using home dir");
 }
 
@@ -143,7 +144,7 @@ impl Config {
                 Config::parse(&contents)
             }
             Err(_) => {
-                tracing::info!(
+                tracing::warn!(
                     path = DEFAULT_PATH,
                     "no config found at the path using defaults"
                 );
