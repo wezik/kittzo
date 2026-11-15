@@ -77,9 +77,9 @@ impl Payment {
         let next = State::Paid { paid_at: now };
 
         // invariant guard
-        if self.state != State::Unpaid {
+        if self.state != State::Unpaid || self.ack != (Ack::Confirmed { value: true }) {
             let err = Error::InvalidTransition {
-                from: format!("{:?}", self.state),
+                from: format!("{:?} {:?}", self.state, self.ack),
                 to: format!("{:?}", next),
             };
 
@@ -97,9 +97,9 @@ impl Payment {
         let next = Ack::Confirmed { value: accepted };
 
         // invariant guard
-        if self.ack != Ack::Pending {
+        if self.ack != Ack::Pending || self.state != State::Unpaid {
             let err = Error::InvalidTransition {
-                from: format!("{:?}", self.ack),
+                from: format!("{:?} {:?}", self.state, self.ack),
                 to: format!("{:?}", next),
             };
 
@@ -209,5 +209,43 @@ mod tests {
 
         // then
         assert_matches!(res, Error::InvalidTransition { .. });
+    }
+
+    #[test]
+    fn pay_requires_accepted_ack() {
+        for ack in [Ack::Pending, Ack::Confirmed { value: false }] {
+            // given
+            let mut payment = some_payment();
+            payment.ack = ack;
+
+            // when
+            let res = payment.pay().expect_err("unaccepted pay");
+
+            // then
+            assert_matches!(res, Error::InvalidTransition { .. });
+            assert_eq!(payment.state, State::Unpaid);
+        }
+    }
+
+    #[test]
+    fn pay_succeeds_for_accepted_unpaid() {
+        let mut payment = some_payment();
+        payment.pay().expect("accepted pay");
+        assert_matches!(payment.state, State::Paid { .. });
+    }
+
+    #[test]
+    fn ack_rejects_for_paid() {
+        // given
+        let mut payment = some_payment();
+        payment.pay().unwrap();
+        payment.ack = Ack::Pending;
+
+        // when
+        let res = payment.ack(false).expect_err("ack after pay");
+
+        // then
+        assert_matches!(res, Error::InvalidTransition { .. });
+        assert_eq!(payment.ack, Ack::Pending);
     }
 }
