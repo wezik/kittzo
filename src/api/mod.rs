@@ -33,8 +33,6 @@ pub async fn serve(addr: &str, state: AppState) -> std::io::Result<()> {
     let router = router.merge(dev_sandbox::router());
     let router = router.with_state(state).fallback_service(
         ServiceBuilder::new()
-            // static assets change during development; always revalidate instead of
-            // letting the browser's heuristic cache serve a stale app.js/index.html.
             .layer(SetResponseHeaderLayer::overriding(
                 header::CACHE_CONTROL,
                 HeaderValue::from_static("no-cache"),

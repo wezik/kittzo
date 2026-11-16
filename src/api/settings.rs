@@ -45,7 +45,7 @@ async fn list(State(state): State<AppState>) -> impl IntoResponse {
                 .collect::<Vec<_>>(),
         )
         .into_response(),
-        Err(err) => error(err),
+        Err(err) => error(&err),
     }
 }
 
@@ -55,11 +55,11 @@ async fn update(
 ) -> impl IntoResponse {
     match state.settings.update(changes).await {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
-        Err(err) => error(err),
+        Err(err) => error(&err),
     }
 }
 
-fn error(err: Error) -> axum::response::Response {
+fn error(err: &Error) -> axum::response::Response {
     match err {
         Error::Unknown(_) => (StatusCode::UNPROCESSABLE_ENTITY, err.to_string()),
         _ => {

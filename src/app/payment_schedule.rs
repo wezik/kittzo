@@ -76,8 +76,6 @@ impl Service {
         Ok(sqlx_payment_schedule_repository::delete(&self.pool, id).await?)
     }
 
-    /// Returns how many payments were created. A schedule that fails is logged and left as
-    /// it was, so the next run retries it.
     pub async fn process_due(&self, today: Date) -> Result<usize, Error> {
         let due = sqlx_payment_schedule_repository::find_due(&self.pool, today).await?;
         let mut created = 0;
@@ -136,7 +134,7 @@ mod tests {
     }
 
     async fn payments(pool: &SqlitePool) -> Vec<payment::Payment> {
-        sqlx_payment_repository::find_all(pool, Default::default())
+        sqlx_payment_repository::find_all(pool, payment::ListQuery::default())
             .await
             .unwrap()
     }
@@ -208,7 +206,7 @@ mod tests {
                 Money::from_parts("PLN", "1.00").unwrap(),
                 "foo".into(),
                 AccountNumber::try_from("61109010140000071219812874".to_string()).unwrap(),
-                "".into(),
+                String::new(),
                 Recurrence::Monthly { day_of_month: 1 },
                 today(),
             )

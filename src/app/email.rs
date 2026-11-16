@@ -55,7 +55,7 @@ mod tests {
     use super::*;
     use crate::domain::email::ParsingResult;
     use crate::domain::money::some_money;
-    use crate::domain::payment::{self as domain, Details, Payment, Source, TaxForm};
+    use crate::domain::payment::{self as domain, Details, ListQuery, Payment, Source, TaxForm};
     use crate::infra::persistence::connect;
     use async_trait::async_trait;
 
@@ -117,7 +117,7 @@ mod tests {
         let created = service.process(&email()).await.unwrap();
 
         assert_eq!(created, 2);
-        let stored = payments.list(Default::default()).await.unwrap();
+        let stored = payments.list(ListQuery::default()).await.unwrap();
         assert!(stored.iter().all(|payment| payment.source
             == Source::Email {
                 message_id: "<m1@mail.gmail.com>".into()
@@ -133,7 +133,13 @@ mod tests {
         let (service, payments) = service(Ok(vec![])).await;
 
         assert_eq!(service.process(&email()).await.unwrap(), 0);
-        assert!(payments.list(Default::default()).await.unwrap().is_empty());
+        assert!(
+            payments
+                .list(ListQuery::default())
+                .await
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[tokio::test]

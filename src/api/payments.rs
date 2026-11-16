@@ -14,8 +14,6 @@ use crate::domain::payment::{self, ListQueryAckFilter, ListQueryPaidFilter, Paym
 
 use super::AppState;
 
-// Mappings
-
 #[derive(Deserialize)]
 pub(super) struct CreatePaymentRequest {
     pub(super) total: MoneyDto,
@@ -118,7 +116,7 @@ impl From<payment::Source> for PaymentSourceDto {
     }
 }
 
-pub(super) fn map_err_to_response(err: app::payment::Error) -> Response {
+pub(super) fn map_err_to_response(err: &app::payment::Error) -> Response {
     use app::payment::Error;
     match err {
         Error::AlreadyExists => StatusCode::CONFLICT.into_response(),
@@ -163,8 +161,6 @@ impl From<AckFilter> for ListQueryAckFilter {
     }
 }
 
-// Routes
-
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/payments", get(get_list).post(post_create))
@@ -186,7 +182,7 @@ async fn post_create(
         .await
     {
         Ok(payment) => (StatusCode::CREATED, Json(PaymentResponse::from(payment))).into_response(),
-        Err(err) => map_err_to_response(err),
+        Err(err) => map_err_to_response(&err),
     }
 }
 
@@ -217,7 +213,7 @@ async fn get_list(
                 .collect::<Vec<_>>(),
         )
         .into_response(),
-        Err(err) => map_err_to_response(err),
+        Err(err) => map_err_to_response(&err),
     }
 }
 
@@ -241,6 +237,6 @@ async fn post_ack(
 fn transition_response(result: Result<Payment, app::payment::Error>) -> Response {
     match result {
         Ok(payment) => Json(PaymentResponse::from(payment)).into_response(),
-        Err(err) => map_err_to_response(err),
+        Err(err) => map_err_to_response(&err),
     }
 }

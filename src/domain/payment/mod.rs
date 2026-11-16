@@ -64,11 +64,11 @@ impl Payment {
             version: Version::FIRST,
             created_at: now,
             updated_at: now,
-            total: total,
-            details: details,
-            source: source,
+            total,
+            details,
+            source,
             state: State::Unpaid,
-            ack: ack,
+            ack,
         };
         (payment, Event::Created { id })
     }
@@ -214,7 +214,6 @@ mod tests {
 
     #[test]
     fn payments_start_with_correct_ack() {
-        // given
         let total = some_money();
         let details = some_standard_details();
         let cases = vec![
@@ -223,30 +222,24 @@ mod tests {
             (some_payment_source_email(), Ack::Pending),
         ];
 
-        // when
         for (source, expected) in cases {
             let (payment, _) = Payment::new(total, details.clone(), source);
 
-            // then
             assert_eq!(payment.ack(), expected);
         }
     }
 
     #[test]
     fn ack_rejects_for_non_pending() {
-        // given
         let total = some_money();
         let details = some_standard_details();
         let source = some_payment_source_manual();
         let (mut payment, _) = Payment::new(total, details, source);
 
-        // make sure the test case is set up
         assert_ne!(payment.ack(), Ack::Pending);
 
-        // when
         let res = payment.acknowledge(true).expect_err("invalid ack");
 
-        // then
         assert_matches!(res, Error::InvalidTransition { .. });
     }
 

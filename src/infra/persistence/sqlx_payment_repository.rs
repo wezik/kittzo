@@ -10,8 +10,6 @@ use crate::domain::version::Version;
 
 use crate::infra::persistence::{Error, details_columns, details_from_columns, update_conflict};
 
-// sqlite's `Uuid` decode expects a 16-byte BLOB, but ids are stored as TEXT (`.to_string()`),
-// so `id`/`schedule_id` are decoded as `String` here and parsed by hand in `row_to_payment`.
 #[derive(sqlx::FromRow)]
 struct PaymentRow {
     id: String,
@@ -31,8 +29,6 @@ struct PaymentRow {
     ack: String,
 }
 
-/// Takes any executor (`&pool` for a standalone write, `&mut *tx` to join a transaction a
-/// caller already opened, e.g. alongside `sqlx_outbox_repository::create`).
 pub async fn create<'e, E>(executor: E, payment: &Payment) -> Result<Payment, Error>
 where
     E: sqlx::Executor<'e, Database = Sqlite>,
@@ -264,44 +260,35 @@ mod tests {
 
     #[tokio::test]
     async fn create_returns_the_created_payment() {
-        // given
         let pool = pool().await;
         let payment = manual_payment();
 
-        // when
         let created = create(&pool, &payment).await.unwrap();
 
-        // then
         assert_eq!(created, payment);
     }
 
     #[tokio::test]
     async fn create_rejects_a_duplicate_id() {
-        // given
         let pool = pool().await;
         let payment = manual_payment();
         create(&pool, &payment).await.unwrap();
 
-        // when
         let err = create(&pool, &payment).await.unwrap_err();
 
-        // then
         assert!(matches!(err, Error::AlreadyExists));
     }
 
     #[tokio::test]
     async fn find_all_returns_every_payment() {
-        // given
         let pool = pool().await;
         let a = manual_payment();
         let b = manual_payment();
         create(&pool, &a).await.unwrap();
         create(&pool, &b).await.unwrap();
 
-        // when
         let all = find_all(&pool, ListQuery::default()).await.unwrap();
 
-        // then
         assert_eq!(all.len(), 2);
         assert!(all.contains(&a));
         assert!(all.contains(&b));
@@ -309,7 +296,6 @@ mod tests {
 
     #[tokio::test]
     async fn find_all_unpaid_skips_paid_payments() {
-        // given
         let pool = pool().await;
         let unpaid = manual_payment();
         let mut paid = manual_payment();
@@ -320,7 +306,6 @@ mod tests {
             .await
             .unwrap();
 
-        // when
         let found = find_all(
             &pool,
             ListQuery {
@@ -331,13 +316,11 @@ mod tests {
         .await
         .unwrap();
 
-        // then
         assert_eq!(found, vec![unpaid]);
     }
 
     #[tokio::test]
     async fn find_all_combines_status_and_ack_filters() {
-        // given
         let pool = pool().await;
         let accepted = manual_payment();
         let (pending, _) = Payment::new(
@@ -348,7 +331,6 @@ mod tests {
         create(&pool, &accepted).await.unwrap();
         create(&pool, &pending).await.unwrap();
 
-        // when
         let found = find_all(
             &pool,
             ListQuery {
@@ -359,13 +341,11 @@ mod tests {
         .await
         .unwrap();
 
-        // then
         assert_eq!(found, vec![accepted]);
     }
 
     #[tokio::test]
     async fn has_pending_ack_only_when_a_payment_awaits_ack() {
-        // given
         let pool = pool().await;
         create(&pool, &manual_payment()).await.unwrap();
         assert!(!has_pending_ack(&pool).await.unwrap());
@@ -375,30 +355,24 @@ mod tests {
             some_payment_source_email(),
         );
 
-        // when
         create(&pool, &pending).await.unwrap();
 
-        // then
         assert!(has_pending_ack(&pool).await.unwrap());
     }
 
     #[tokio::test]
     async fn find_returns_the_matching_payment() {
-        // given
         let pool = pool().await;
         let payment = manual_payment();
         create(&pool, &payment).await.unwrap();
 
-        // when
         let found = find(&pool, payment.id).await.unwrap();
 
-        // then
         assert_eq!(found, payment);
     }
 
     #[tokio::test]
     async fn email_source_and_tax_details_round_trip() {
-        // given
         let pool = pool().await;
         let (payment, _) = Payment::new(
             Money::from_parts("PLN", "5.00").unwrap(),
@@ -408,10 +382,8 @@ mod tests {
             },
         );
 
-        // when
         create(&pool, &payment).await.unwrap();
 
-        // then
         assert_eq!(find(&pool, payment.id).await.unwrap(), payment);
     }
 
@@ -424,18 +396,15 @@ mod tests {
 
     #[tokio::test]
     async fn paid_round_trips_and_bumps_version() {
-        // given
         let pool = pool().await;
         let mut payment = manual_payment();
         create(&pool, &payment).await.unwrap();
         payment.pay().unwrap();
 
-        // when
         let paid = update(&mut pool.acquire().await.unwrap(), &payment)
             .await
             .unwrap();
 
-        // then
         let stored = find(&pool, payment.id).await.unwrap();
         assert_eq!(stored, paid);
         assert_eq!(stored.version(), Version::FIRST.next());
@@ -444,7 +413,6 @@ mod tests {
 
     #[tokio::test]
     async fn ack_round_trips() {
-        // given
         let pool = pool().await;
         let (mut payment, _) = Payment::new(
             some_money(),
@@ -455,28 +423,23 @@ mod tests {
         assert_eq!(find(&pool, payment.id).await.unwrap().ack(), Ack::Pending);
         payment.acknowledge(false).unwrap();
 
-        // when
         update(&mut pool.acquire().await.unwrap(), &payment)
             .await
             .unwrap();
 
-        // then
         assert_eq!(find(&pool, payment.id).await.unwrap().ack(), Ack::Rejected);
     }
 
     #[tokio::test]
     async fn update_rejects_a_stale_version() {
-        // given
         let pool = pool().await;
         let payment = manual_payment();
         create(&pool, &payment).await.unwrap();
         let mut conn = pool.acquire().await.unwrap();
         update(&mut conn, &payment).await.unwrap();
 
-        // when
         let err = update(&mut conn, &payment).await.unwrap_err();
 
-        // then
         assert!(matches!(err, Error::ConcurrentUpdate));
     }
 

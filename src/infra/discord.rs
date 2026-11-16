@@ -23,8 +23,6 @@ use crate::infra::persistence::{self, sqlx_payment_repository as payment_repo};
 const APPROVE_EMOJI: &str = "✅";
 const REJECT_EMOJI: &str = "❎";
 const DELIVERY_ATTEMPTS: usize = 3;
-/// The `retrying` attempts above are immediate; this is the actual backoff before the message
-/// is handed back to the queue for a fresh consumer poll.
 const NACK_DELAY: Duration = Duration::from_secs(30);
 
 #[derive(Debug, PartialEq)]
@@ -61,10 +59,10 @@ impl DiscordConsumer {
     }
 
     fn prompt(payment: &Payment) -> String {
-        let mut links = String::new();
-        if let Source::Email { message_id } = &payment.source {
-            links.push_str(&format!("\nEmail: {}", gmail_link(message_id)));
-        }
+        let links = match &payment.source {
+            Source::Email { message_id } => format!("\nEmail: {}", gmail_link(message_id)),
+            _ => String::new(),
+        };
         format!(
             "{}: {} requires confirmation, click {APPROVE_EMOJI} to confirm or {REJECT_EMOJI} to reject{links}",
             payment.details.display_title(),
@@ -83,8 +81,8 @@ impl DiscordConsumer {
              (confirmation_id, channel_id, message_id) VALUES (?, ?, ?)",
         )
         .bind(payment_id.to_string())
-        .bind(channel_id.get() as i64)
-        .bind(message_id.get() as i64)
+        .bind(channel_id.get().cast_signed())
+        .bind(message_id.get().cast_signed())
         .execute(&self.pool)
         .await
         .map(|_| ())
@@ -104,7 +102,10 @@ impl DiscordConsumer {
         .map(|row| {
             let channel_id: i64 = row.get("channel_id");
             let message_id: i64 = row.get("message_id");
-            (Id::new(channel_id as u64), Id::new(message_id as u64))
+            (
+                Id::new(channel_id.cast_unsigned()),
+                Id::new(message_id.cast_unsigned()),
+            )
         }))
     }
 
@@ -120,8 +121,6 @@ impl DiscordConsumer {
         if !matches!(message.event_type.as_str(), Event::CREATED | Event::ACKED) {
             return Ok(());
         }
-        // a poison payload requeued forever is a payload retried forever - give up on it once,
-        // loudly, instead of wedging the queue.
         let event: Event = serde_json::from_slice(&message.payload).map_err(|err| {
             tracing::error!(%err, message_id = %message.id, "failed to decode outbox payload");
             Failure::GiveUp
@@ -143,13 +142,9 @@ impl DiscordConsumer {
                 return Err(Failure::Retry);
             }
         };
-        // acked via the UI before delivery (or acked on creation, like manual payments) -
-        // nothing left to ask, and this is also what makes out-of-order delivery against
-        // `withdraw` safe.
         if payment.ack() != Ack::Pending {
             return Ok(());
         }
-        // the outbox delivers at least once - a redelivered event must not post a second prompt.
         match self.find_message(payment_id).await {
             Ok(Some(_)) => return Ok(()),
             Ok(None) => {}
@@ -174,8 +169,6 @@ impl DiscordConsumer {
                     return Err(Failure::Retry);
                 }
             },
-            // a message Discord will never accept must not wedge the queue behind it - every
-            // other failure (rate limit, outage, transient error) is worth retrying.
             Err(err) if matches!(err.kind(), ErrorType::Validation) => {
                 tracing::error!(%err, %payment_id, "discord rejected the prompt, giving up");
                 return Err(Failure::GiveUp);
@@ -186,8 +179,6 @@ impl DiscordConsumer {
             }
         };
 
-        // without the reference the decision can never be matched back, so treat it as failed
-        // and let the next attempt re-send rather than orphan the message.
         if let Err(err) = self
             .remember_message(payment_id, channel_id, message.id)
             .await
@@ -203,8 +194,6 @@ impl DiscordConsumer {
                 .create_reaction(channel_id, message.id, &reaction)
                 .await
             {
-                // not retried: retrying would repost the whole message, and the listener
-                // picks up a manually-added reaction anyway.
                 tracing::warn!(%err, emoji, "failed to add reaction");
             }
         }
@@ -220,8 +209,6 @@ impl DiscordConsumer {
                 return Err(Failure::Retry);
             }
         };
-        // no reference means this payment never had a prompt - e.g. acked on creation, not
-        // an error.
         let Some((channel_id, message_id)) = reference else {
             return Ok(());
         };
@@ -249,7 +236,7 @@ impl DiscordConsumer {
             match received {
                 Ok(message) => self.process(message).await,
                 Err(broadcast::error::RecvError::Lagged(n)) => {
-                    tracing::warn!(n, "discord consumer lagged, some events were dropped")
+                    tracing::warn!(n, "discord consumer lagged, some events were dropped");
                 }
                 Err(broadcast::error::RecvError::Closed) => break,
             }
@@ -301,8 +288,6 @@ fn decision_from_emoji(emoji: &EmojiReactionType) -> Option<bool> {
     }
 }
 
-/// Pushes reactions in as they happen; a reconcile job would be the slow catch-up for
-/// anything missed while disconnected - deliberately out of scope for now.
 pub struct DiscordReactionListener {
     token: String,
     pool: SqlitePool,
@@ -322,7 +307,7 @@ impl DiscordReactionListener {
         let row = sqlx::query(
             "SELECT confirmation_id FROM discord_confirmation_messages WHERE message_id = ?",
         )
-        .bind(message_id.get() as i64)
+        .bind(message_id.get().cast_signed())
         .fetch_optional(&self.pool)
         .await?;
         Ok(row.and_then(|row| {
@@ -334,8 +319,6 @@ impl DiscordReactionListener {
     }
 
     pub async fn run(self) {
-        // the bot reacts to its own prompt to give the human something to click, so without
-        // knowing its own id every prompt would instantly self-approve.
         let own_id = match Client::new(self.token.clone()).current_user().await {
             Ok(response) => match response.model().await {
                 Ok(user) => user.id,

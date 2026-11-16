@@ -50,7 +50,6 @@ pub(crate) async fn update_conflict(
     }
 }
 
-// one connection avoids `SQLITE_BUSY` contention between writers.
 pub async fn connect(url: &str) -> sqlx::Result<SqlitePool> {
     let options = SqliteConnectOptions::from_str(url)?
         .create_if_missing(true)

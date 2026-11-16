@@ -1,3 +1,4 @@
+use std::fmt::Write;
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -7,7 +8,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use crate::domain::{
-    email::{self, Email, ParsingResult},
+    email::{self, Candidate, Email, ParsingResult},
     money::Money,
     payment::{self, AccountNumber, Details, Payment, Source, TaxForm},
 };
@@ -63,11 +64,13 @@ impl OpenRouterParser {
             email.from, email.subject, attachments, email.text
         );
         if let Some(previous) = previous {
-            text.push_str(&format!(
+            write!(
+                text,
                 "\n\nAn earlier pass over the email text alone, without the attachments, returned:\n\
                  {previous}\n\
                  Use the attached PDFs to fill in its missing fields and correct it. Return the complete result."
-            ));
+            )
+            .unwrap();
         }
         if previous.is_some() || email.pdfs.is_empty() {
             text.push_str(
@@ -209,10 +212,7 @@ struct RawPayment {
     form_symbol: Option<String>,
 }
 
-fn results_from_content(
-    content: &str,
-    source: &Source,
-) -> Result<Vec<Result<(Payment, payment::Event), payment::Error>>, email::Error> {
+fn results_from_content(content: &str, source: &Source) -> Result<Vec<Candidate>, email::Error> {
     let json = content
         .trim()
         .trim_start_matches("```json")
@@ -288,7 +288,7 @@ mod tests {
         }
     }
 
-    fn details(results: Vec<Result<(Payment, payment::Event), payment::Error>>) -> Vec<Details> {
+    fn details(results: Vec<Candidate>) -> Vec<Details> {
         results
             .into_iter()
             .map(|result| result.unwrap().0.details)

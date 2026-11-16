@@ -126,7 +126,7 @@ mod tests {
     use crate::app::payment;
     use crate::domain::email::{self, Email, MailboxError, Parser, ParsingResult};
     use crate::domain::money::some_money;
-    use crate::domain::payment::{Payment, Source, some_standard_details};
+    use crate::domain::payment::{ListQuery, Payment, Source, some_standard_details};
     use crate::infra::persistence::connect;
     use async_trait::async_trait;
 
@@ -207,7 +207,7 @@ mod tests {
         job.process().await;
 
         assert_eq!(parser.calls.load(Ordering::SeqCst), 2);
-        assert_eq!(payments.list(Default::default()).await.unwrap().len(), 2);
+        assert_eq!(payments.list(ListQuery::default()).await.unwrap().len(), 2);
     }
 
     #[tokio::test]
@@ -219,7 +219,13 @@ mod tests {
         }
 
         assert_eq!(parser.calls.load(Ordering::SeqCst), 3);
-        assert!(payments.list(Default::default()).await.unwrap().is_empty());
+        assert!(
+            payments
+                .list(ListQuery::default())
+                .await
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[tokio::test]
@@ -232,6 +238,6 @@ mod tests {
         job.process().await;
 
         assert_eq!(parser.calls.load(Ordering::SeqCst), 2);
-        assert_eq!(payments.list(Default::default()).await.unwrap().len(), 1);
+        assert_eq!(payments.list(ListQuery::default()).await.unwrap().len(), 1);
     }
 }

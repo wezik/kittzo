@@ -6,8 +6,6 @@ use crate::domain::event::OutboxMessage;
 
 use super::Error;
 
-/// Takes any executor (`&pool` for a standalone write, `&mut *tx` to join a transaction a
-/// caller already opened, e.g. alongside `sqlx_payment_repository::create`).
 pub async fn create<'e, E>(executor: E, msg: impl Into<OutboxMessage>) -> Result<(), Error>
 where
     E: sqlx::Executor<'e, Database = Sqlite>,
@@ -30,9 +28,6 @@ where
     Ok(())
 }
 
-/// Atomically claims up to `limit` unprocessed messages (never claimed, or claimed longer
-/// ago than `retry_after` without being marked processed - same reclaim-on-staleness shape
-/// as `sqlx_payment_schedule_repository::claim_due`).
 pub async fn claim_batch(
     pool: &SqlitePool,
     retry_after: SignedDuration,
@@ -99,18 +94,15 @@ mod tests {
 
     #[tokio::test]
     async fn create_then_claim_returns_the_message() {
-        // given
         let pool = pool().await;
         let aggregate_id = Uuid::new_v4();
         let event = Event::Created { id: aggregate_id };
 
-        // when
         create(&pool, event).await.unwrap();
         let claimed = claim_batch(&pool, SignedDuration::seconds(30), 10)
             .await
             .unwrap();
 
-        // then
         assert_eq!(claimed.len(), 1);
         assert_eq!(claimed[0].event_type, Event::CREATED);
         assert_eq!(claimed[0].aggregate_id, aggregate_id.to_string());
@@ -118,7 +110,6 @@ mod tests {
 
     #[tokio::test]
     async fn a_processed_message_is_not_claimed_again() {
-        // given
         let pool = pool().await;
         create(&pool, Event::Created { id: Uuid::new_v4() })
             .await
@@ -127,19 +118,16 @@ mod tests {
             .await
             .unwrap();
 
-        // when
         mark_processed(&pool, claimed[0].id).await.unwrap();
         let second = claim_batch(&pool, SignedDuration::seconds(30), 10)
             .await
             .unwrap();
 
-        // then
         assert!(second.is_empty());
     }
 
     #[tokio::test]
     async fn a_freshly_claimed_message_is_not_reclaimed_before_retry_after_elapses() {
-        // given
         let pool = pool().await;
         create(&pool, Event::Created { id: Uuid::new_v4() })
             .await
@@ -148,18 +136,15 @@ mod tests {
             .await
             .unwrap();
 
-        // when
         let second = claim_batch(&pool, SignedDuration::seconds(30), 10)
             .await
             .unwrap();
 
-        // then
         assert!(second.is_empty());
     }
 
     #[tokio::test]
     async fn a_deferred_message_is_reclaimed_once_retry_after_elapses() {
-        // given
         let pool = pool().await;
         create(&pool, Event::Created { id: Uuid::new_v4() })
             .await
@@ -168,19 +153,16 @@ mod tests {
             .await
             .unwrap();
 
-        // when
         let reclaimed = claim_batch(&pool, SignedDuration::seconds(0), 10)
             .await
             .unwrap();
 
-        // then
         assert_eq!(reclaimed.len(), 1);
         assert_eq!(reclaimed[0].id, first[0].id);
     }
 
     #[tokio::test]
     async fn claim_batch_returns_insertion_order() {
-        // given
         let pool = pool().await;
         let first_id = Uuid::new_v4();
         let second_id = Uuid::new_v4();
@@ -191,19 +173,16 @@ mod tests {
             .await
             .unwrap();
 
-        // when
         let claimed = claim_batch(&pool, SignedDuration::seconds(30), 10)
             .await
             .unwrap();
 
-        // then
         assert_eq!(claimed[0].aggregate_id, first_id.to_string());
         assert_eq!(claimed[1].aggregate_id, second_id.to_string());
     }
 
     #[tokio::test]
     async fn claim_batch_respects_the_limit() {
-        // given
         let pool = pool().await;
         create(&pool, Event::Created { id: Uuid::new_v4() })
             .await
@@ -212,12 +191,10 @@ mod tests {
             .await
             .unwrap();
 
-        // when
         let claimed = claim_batch(&pool, SignedDuration::seconds(30), 1)
             .await
             .unwrap();
 
-        // then
         assert_eq!(claimed.len(), 1);
     }
 }

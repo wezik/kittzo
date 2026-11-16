@@ -36,12 +36,6 @@ impl OutboxRelayConfig {
     }
 }
 
-/// Drains the outbox and publishes each message onto the in-process `EventBus` - the
-/// transactional-outbox half of "back up requests to slow Discord": the write into `outbox`
-/// already happened durably alongside whatever domain change produced it, this just delivers
-/// it on a schedule instead of inline. Publishing itself can't fail (fire-and-forget, in
-/// memory), so every claimed message is marked processed right after; a subscriber that fails
-/// to handle it (e.g. Discord being down) is responsible for its own retry.
 pub fn event_bus() -> broadcast::Sender<OutboxMessage> {
     broadcast::channel(256).0
 }
@@ -123,15 +117,12 @@ mod tests {
 
     #[tokio::test]
     async fn processes_an_unprocessed_message_and_marks_it_processed() {
-        // given
         let pool = connect("sqlite::memory:").await.unwrap();
         some_event(&pool).await;
         let (job, mut rx) = job(pool.clone());
 
-        // when
         job.process().await.unwrap();
 
-        // then
         assert_eq!(published(&mut rx).len(), 1);
         let remaining = outbox_repo::claim_batch(&pool, SignedDuration::seconds(0), 10)
             .await
@@ -141,33 +132,29 @@ mod tests {
 
     #[tokio::test]
     async fn processes_messages_in_insertion_order() {
-        // given
         let pool = connect("sqlite::memory:").await.unwrap();
         let first = some_event(&pool).await;
         let second = some_event(&pool).await;
         let (job, mut rx) = job(pool.clone());
 
-        // when
         job.process().await.unwrap();
 
-        // then
         assert_eq!(published(&mut rx), vec![first, second]);
     }
 
     #[tokio::test]
     async fn respects_the_batch_limit() {
-        // given
         let pool = connect("sqlite::memory:").await.unwrap();
         some_event(&pool).await;
         some_event(&pool).await;
-        let mut config = OutboxRelayConfig::default();
-        config.batch_limit = 1;
+        let config = OutboxRelayConfig {
+            batch_limit: 1,
+            ..OutboxRelayConfig::default()
+        };
         let (job, mut rx) = job_with(pool.clone(), config);
 
-        // when
         job.process().await.unwrap();
 
-        // then
         assert_eq!(published(&mut rx).len(), 1);
     }
 }

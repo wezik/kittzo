@@ -168,6 +168,8 @@ fn truncate(mut text: String, limit: usize) -> String {
 
 #[cfg(test)]
 pub(crate) mod tests {
+    use std::fmt::Write;
+
     use base64::Engine;
     use base64::engine::general_purpose::STANDARD as BASE64;
 
@@ -186,20 +188,19 @@ pub(crate) mod tests {
         let mut offsets = Vec::new();
         for (i, object) in objects.iter().enumerate() {
             offsets.push(pdf.len());
-            pdf.push_str(&format!("{} 0 obj\n{object}\nendobj\n", i + 1));
+            write!(pdf, "{} 0 obj\n{object}\nendobj\n", i + 1).unwrap();
         }
         let xref = pdf.len();
-        pdf.push_str(&format!(
-            "xref\n0 {}\n0000000000 65535 f \n",
-            objects.len() + 1
-        ));
+        write!(pdf, "xref\n0 {}\n0000000000 65535 f \n", objects.len() + 1).unwrap();
         for offset in offsets {
-            pdf.push_str(&format!("{offset:010} 00000 n \n"));
+            writeln!(pdf, "{offset:010} 00000 n ").unwrap();
         }
-        pdf.push_str(&format!(
+        write!(
+            pdf,
             "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n",
             objects.len() + 1
-        ));
+        )
+        .unwrap();
         pdf.into_bytes()
     }
 
@@ -215,12 +216,14 @@ pub(crate) mod tests {
              Do zapłaty 307,50 zł.\r\n",
         );
         for (name, content_type, bytes) in attachments {
-            raw.push_str(&format!(
+            write!(
+                raw,
                 "--b\r\nContent-Type: {content_type}; name=\"{name}\"\r\n\
                  Content-Disposition: attachment; filename=\"{name}\"\r\n\
                  Content-Transfer-Encoding: base64\r\n\r\n{}\r\n",
                 BASE64.encode(bytes)
-            ));
+            )
+            .unwrap();
         }
         raw.push_str("--b--\r\n");
         raw.into_bytes()

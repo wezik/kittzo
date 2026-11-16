@@ -63,6 +63,6 @@ async fn post_create_payment(
             Json(payments::PaymentResponse::from(payment)),
         )
             .into_response(),
-        Err(err) => payments::map_err_to_response(err),
+        Err(err) => payments::map_err_to_response(&err),
     }
 }

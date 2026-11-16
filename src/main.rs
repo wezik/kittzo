@@ -15,7 +15,6 @@ use app::payment;
 use app::payment_schedule;
 use app::payment_schedule_job::PaymentScheduleJob;
 use app::settings::{self, Setting};
-
 use infra::config::{Config, OpenRouterConfig};
 use infra::discord::{DiscordConsumer, DiscordReactionListener};
 use infra::email::OpenRouterParser;
@@ -42,14 +41,13 @@ fn main() {
             .block_on(serve(config, pending_ack));
     });
 
-    // the tray needs the OS event loop on the main thread, so the server runs on its own thread.
     infra::tray::spawn(server_port, tray_pending_ack);
 }
 
 async fn serve(config: Config, pending_ack: Arc<AtomicBool>) {
     let pool = infra::persistence::connect("sqlite:kittzo.db")
         .await
-        .expect("failed to connect to database"); // intentional panic, db is a necessary dependency
+        .expect("failed to connect to database");
 
     let settings_service = Arc::new(settings::Service::new(
         pool.clone(),
@@ -88,7 +86,6 @@ async fn serve(config: Config, pending_ack: Arc<AtomicBool>) {
         );
     } else if let Some(channel_id) = discord_channel {
         tracing::info!("discord enabled");
-        // subscribes before the relay job below can publish anything.
         tokio::spawn(
             DiscordConsumer::new(
                 settings.get(Setting::DiscordToken),
@@ -112,9 +109,7 @@ async fn serve(config: Config, pending_ack: Arc<AtomicBool>) {
     }
 
     let missing = settings.missing(&Setting::EMAIL);
-    if !missing.is_empty() {
-        tracing::warn!(?missing, "email watcher disabled");
-    } else {
+    if missing.is_empty() {
         tracing::info!("email watcher enabled");
         let parser = Arc::new(OpenRouterParser::new(OpenRouterConfig {
             api_key: settings.get(Setting::OpenrouterApiKey),
@@ -137,6 +132,8 @@ async fn serve(config: Config, pending_ack: Arc<AtomicBool>) {
             )
             .run(),
         );
+    } else {
+        tracing::warn!(?missing, "email watcher disabled");
     }
 
     let state = AppState {

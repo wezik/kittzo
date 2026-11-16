@@ -71,9 +71,9 @@ impl Details {
         }
 
         Ok(Details::Standard {
-            title: title,
-            account_number: account_number,
-            recipient: recipient,
+            title,
+            account_number,
+            recipient,
         })
     }
 
@@ -101,7 +101,6 @@ mod tests {
 
     #[test]
     fn raw_account_number_is_normalized() {
-        // given
         let cases = vec![
             "61 1090 1014 0000 0712 1981 2874",
             "61109010140000 0712 1981 2874",
@@ -109,26 +108,21 @@ mod tests {
 
         let expected = "61109010140000071219812874";
 
-        // when
         for case in cases {
             let result = AccountNumber::try_from(case.to_string()).expect("valid account number");
 
-            // then
             assert_eq!(result.as_str(), expected);
         }
     }
 
     #[test]
     fn invalid_account_number_is_rejected() {
-        // given
         let cases = vec!["61109010140000071212874", "611090101400000712198128741"];
 
-        // when
         for case in cases {
             let result =
                 AccountNumber::try_from(case.to_string()).expect_err("invalid account number");
 
-            // then
             assert_matches!(result, Error::InvalidAccountNumber);
         }
     }

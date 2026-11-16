@@ -34,7 +34,6 @@ impl Default for Config {
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct DiscordConfig {
-    /// Catch-up only: decisions normally arrive over the gateway within a second.
     pub reconcile_interval_secs: u64,
 }
 
@@ -88,14 +87,15 @@ impl Default for OpenRouterConfig {
 const DEFAULT_PATH: &str = "kittzo.toml";
 
 pub fn enter_home_dir() {
-    let dir = std::env::var_os("KITTZO_HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| {
+    let dir = std::env::var_os("KITTZO_HOME").map_or_else(
+        || {
             let exe = std::env::current_exe().expect("failed to locate the executable");
             exe.parent()
                 .expect("executable has no parent dir")
                 .to_path_buf()
-        });
+        },
+        PathBuf::from,
+    );
     std::env::set_current_dir(&dir)
         .unwrap_or_else(|e| panic!("cannot enter home dir {}: {e}", dir.display()));
     tracing::info!(dir = %dir.display(), "using home dir");
@@ -109,12 +109,12 @@ impl Config {
     fn load_from(path: &Path) -> Config {
         match std::fs::read_to_string(path) {
             Ok(contents) => {
-                tracing::info!(path = DEFAULT_PATH, "loading config");
+                tracing::info!(path = %path.display(), "loading config");
                 Config::parse(&contents)
             }
             Err(_) => {
                 tracing::warn!(
-                    path = DEFAULT_PATH,
+                    path = %path.display(),
                     "no config found at the path using defaults"
                 );
                 Config::default()
@@ -227,31 +227,5 @@ mod tests {
         let cfg = Config::load_from(&path);
         std::fs::remove_file(&path).ok();
         assert_eq!(cfg.server_port, 4242);
-    }
-
-    /// Proves the pattern later steps rely on: a component (e.g. Discord)
-    /// owns its own `#[derive(Deserialize, Default)] struct XConfig`, `Config`
-    /// gets a `pub x: XConfig` field, and it's populated from a `[x]` table -
-    /// no extra loader machinery needed, this is just serde+toml doing its
-    /// normal nested-struct deserialization.
-    #[test]
-    fn nested_table_sections_parse_into_sub_structs() {
-        #[derive(Deserialize, Default, PartialEq, Debug)]
-        #[serde(default)]
-        struct DiscordConfig {
-            token: String,
-        }
-        #[derive(Deserialize, Default)]
-        #[serde(default)]
-        struct WithSection {
-            server_port: u16,
-            discord: DiscordConfig,
-        }
-
-        let parsed: WithSection =
-            toml::from_str("server_port = 1\n\n[discord]\ntoken = \"abc\"\n").unwrap();
-
-        assert_eq!(parsed.server_port, 1);
-        assert_eq!(parsed.discord.token, "abc");
     }
 }

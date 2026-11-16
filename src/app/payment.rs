@@ -82,7 +82,7 @@ impl Service {
 
         let mut tx = start_tx(&self.pool).await?;
 
-        let payment = sqlx_payment_repository::update(&mut *tx, &payment).await?;
+        let payment = sqlx_payment_repository::update(&mut tx, &payment).await?;
         sqlx_outbox_repository::create(&mut *tx, event).await?;
 
         commit_tx(tx).await?;
@@ -95,7 +95,7 @@ impl Service {
 
         let mut tx = start_tx(&self.pool).await?;
 
-        let payment = sqlx_payment_repository::update(&mut *tx, &payment).await?;
+        let payment = sqlx_payment_repository::update(&mut tx, &payment).await?;
         sqlx_outbox_repository::create(&mut *tx, event).await?;
 
         commit_tx(tx).await?;
