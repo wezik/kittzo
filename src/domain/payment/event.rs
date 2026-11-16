@@ -9,13 +9,19 @@ pub enum Event {
     Finished { id: Uuid },
 }
 
+impl Event {
+    pub const CREATED: &str = "PAYMENT_CREATED";
+    pub const ACKED: &str = "PAYMENT_ACKED";
+    pub const FINISHED: &str = "PAYMENT_FINISHED";
+}
+
 impl From<Event> for OutboxMessage {
     fn from(event: Event) -> Self {
-        let (msg_key, agg_key) = match event {
-            Event::Created { id } => ("PAYMENT_CREATED", id),
-            Event::Acked { id } => ("PAYMENT_ACKED", id),
-            Event::Finished { id } => ("PAYMENT_FINISHED", id),
+        let (event_type, id) = match event {
+            Event::Created { id } => (Event::CREATED, id),
+            Event::Acked { id } => (Event::ACKED, id),
+            Event::Finished { id } => (Event::FINISHED, id),
         };
-        OutboxMessage::new(msg_key.into(), agg_key.into(), &event)
+        OutboxMessage::new(event_type, id.to_string(), &event)
     }
 }

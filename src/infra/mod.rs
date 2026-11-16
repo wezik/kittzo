@@ -1,4 +1,3 @@
-pub mod codec;
 pub mod config;
 pub mod discord;
 pub mod email;

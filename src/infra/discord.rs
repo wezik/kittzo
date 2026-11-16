@@ -18,9 +18,8 @@ use uuid::Uuid;
 use crate::app::event_bus::EventBus;
 use crate::app::payment;
 use crate::app::run::retrying;
-use crate::domain::event::{Codec, OutboxMessage};
+use crate::domain::event::OutboxMessage;
 use crate::domain::payment::{Ack, Event, Payment, Source};
-use crate::infra::codec::JsonCodec;
 use crate::infra::persistence::{self, sqlx_payment_repository as payment_repo};
 
 const CONFIRMATIONS_CHANNEL: &str = "confirmations";
@@ -129,15 +128,12 @@ impl DiscordConsumer {
     }
 
     async fn handle(&self, message: &OutboxMessage) -> Result<(), Failure> {
-        if !matches!(
-            message.event_type.as_str(),
-            "PAYMENT_CREATED" | "PAYMENT_ACKED"
-        ) {
+        if !matches!(message.event_type.as_str(), Event::CREATED | Event::ACKED) {
             return Ok(());
         }
         // a poison payload requeued forever is a payload retried forever - give up on it once,
         // loudly, instead of wedging the queue.
-        let event: Event = JsonCodec::decode(&message.payload).map_err(|err| {
+        let event: Event = serde_json::from_slice(&message.payload).map_err(|err| {
             tracing::error!(%err, message_id = %message.id, "failed to decode outbox payload");
             Failure::GiveUp
         })?;
@@ -546,7 +542,7 @@ mod tests {
     fn garbage() -> OutboxMessage {
         OutboxMessage {
             id: Uuid::new_v4(),
-            event_type: "PAYMENT_CREATED".to_string(),
+            event_type: Event::CREATED.to_string(),
             aggregate_id: Uuid::new_v4().to_string(),
             payload: b"not json".to_vec(),
         }

@@ -112,7 +112,7 @@ mod tests {
 
         // then
         assert_eq!(claimed.len(), 1);
-        assert_eq!(claimed[0].event_type, "PAYMENT_CREATED");
+        assert_eq!(claimed[0].event_type, Event::CREATED);
         assert_eq!(claimed[0].aggregate_id, aggregate_id.to_string());
     }
 

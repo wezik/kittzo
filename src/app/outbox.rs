@@ -84,8 +84,7 @@ mod tests {
     use uuid::Uuid;
 
     use super::*;
-    use crate::domain::event::{Codec, OutboxMessage};
-    use crate::infra::codec::JsonCodec;
+    use crate::domain::event::OutboxMessage;
     use crate::infra::persistence::connect;
 
     struct FakeBus {
@@ -174,14 +173,5 @@ mod tests {
 
         // then
         assert_eq!(bus.published.lock().unwrap().len(), 1);
-    }
-
-    #[test]
-    fn decode_round_trips_through_json_codec() {
-        use crate::domain::payment::Event;
-        let event = Event::Created { id: Uuid::new_v4() };
-        let msg = OutboxMessage::from(event.clone());
-        let decoded: Event = JsonCodec::decode(&msg.payload).unwrap();
-        assert_eq!(decoded, event);
     }
 }
