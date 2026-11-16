@@ -10,8 +10,7 @@ use std::sync::atomic::AtomicBool;
 use api::AppState;
 use app::email;
 use app::email_watch_job::EmailWatchJob;
-use app::event_bus::EventBus;
-use app::outbox::OutboxRelayJob;
+use app::outbox::{self, OutboxRelayJob};
 use app::payment;
 use app::payment_schedule::PaymentScheduleService;
 use app::payment_schedule_job::PaymentScheduleJob;
@@ -20,7 +19,6 @@ use infra::Config;
 use infra::config::OpenRouterConfig;
 use infra::discord::{DiscordConsumer, DiscordReactionListener};
 use infra::email::OpenRouterParser;
-use infra::event_bus::TokioEventBus;
 use infra::imap::GmailMailbox;
 use infra::secrets::Keyring;
 use infra::tray::PendingAckWatch;
@@ -75,7 +73,7 @@ async fn serve(config: Config, pending_ack: Arc<AtomicBool>) {
     );
     tokio::spawn(PendingAckWatch::new(payment_service.clone(), pending_ack).run());
 
-    let bus: Arc<dyn EventBus> = Arc::new(TokioEventBus::new());
+    let bus = outbox::event_bus();
     let missing = settings.missing(&Setting::DISCORD);
     if !missing.is_empty() {
         tracing::warn!(

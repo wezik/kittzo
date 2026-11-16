@@ -15,7 +15,6 @@ use twilight_model::id::{
 };
 use uuid::Uuid;
 
-use crate::app::event_bus::EventBus;
 use crate::app::payment;
 use crate::app::run::retrying;
 use crate::domain::event::OutboxMessage;
@@ -40,7 +39,7 @@ pub struct DiscordConsumer {
     client: Client,
     channels: HashMap<String, String>,
     pool: SqlitePool,
-    bus: Arc<dyn EventBus>,
+    bus: broadcast::Sender<OutboxMessage>,
     receiver: broadcast::Receiver<OutboxMessage>,
     nack_delay: Duration,
 }
@@ -50,7 +49,7 @@ impl DiscordConsumer {
         token: String,
         channels: HashMap<String, String>,
         pool: SqlitePool,
-        bus: Arc<dyn EventBus>,
+        bus: broadcast::Sender<OutboxMessage>,
     ) -> Self {
         let receiver = bus.subscribe();
         Self {
@@ -288,7 +287,7 @@ impl DiscordConsumer {
                     "discord delivery failed, retrying later"
                 );
                 tokio::time::sleep(self.nack_delay).await;
-                self.bus.publish(message);
+                let _ = self.bus.send(message);
             }
         }
     }
@@ -404,16 +403,16 @@ impl DiscordReactionListener {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::outbox::event_bus;
     use crate::domain::money::Money;
     use crate::domain::money::some_money;
     use crate::domain::payment::some_standard_details;
     use crate::domain::payment::{Details, TaxForm};
-    use crate::infra::event_bus::TokioEventBus;
     use crate::infra::persistence::connect;
 
     async fn consumer() -> DiscordConsumer {
         let pool = connect("sqlite::memory:").await.unwrap();
-        consumer_with(pool, Arc::new(TokioEventBus::new()))
+        consumer_with(pool, event_bus())
     }
 
     fn email_source() -> Source {
@@ -574,7 +573,10 @@ mod tests {
         assert_eq!(decision_from_emoji(&reject), Some(false));
     }
 
-    fn consumer_with(pool: sqlx::SqlitePool, bus: Arc<dyn EventBus>) -> DiscordConsumer {
+    fn consumer_with(
+        pool: sqlx::SqlitePool,
+        bus: broadcast::Sender<OutboxMessage>,
+    ) -> DiscordConsumer {
         let receiver = bus.subscribe();
         DiscordConsumer {
             client: Client::new(String::new()),
@@ -590,7 +592,7 @@ mod tests {
     async fn process_does_not_republish_a_delivery_it_can_handle() {
         let pool = connect("sqlite::memory:").await.unwrap();
         let msg = OutboxMessage::from(Event::Acked { id: Uuid::new_v4() });
-        let bus = Arc::new(TokioEventBus::new());
+        let bus = event_bus();
         let mut spy = bus.subscribe();
         let consumer = consumer_with(pool, bus);
 
@@ -608,7 +610,7 @@ mod tests {
         // no `[discord.channels]` entry configured, so `post_prompt` returns `Retry` without
         // ever touching the network.
         let msg = OutboxMessage::from(Event::Created { id: payment.id });
-        let bus = Arc::new(TokioEventBus::new());
+        let bus = event_bus();
         let mut spy = bus.subscribe();
         let consumer = consumer_with(pool, bus);
 
@@ -624,7 +626,7 @@ mod tests {
     #[tokio::test]
     async fn process_does_not_republish_an_undecodable_payload() {
         let pool = connect("sqlite::memory:").await.unwrap();
-        let bus = Arc::new(TokioEventBus::new());
+        let bus = event_bus();
         let mut spy = bus.subscribe();
         let consumer = consumer_with(pool, bus);
 
@@ -637,7 +639,7 @@ mod tests {
     #[tokio::test]
     async fn listener_resolves_a_message_back_to_its_payment() {
         let pool = connect("sqlite::memory:").await.unwrap();
-        let consumer = consumer_with(pool.clone(), Arc::new(TokioEventBus::new()));
+        let consumer = consumer_with(pool.clone(), event_bus());
         let payment_id = Uuid::new_v4();
         let message_id = Id::<MessageMarker>::new(222);
         consumer

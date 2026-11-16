@@ -1,6 +1,5 @@
 pub mod email;
 pub mod email_watch_job;
-pub mod event_bus;
 pub mod outbox;
 pub mod payment;
 pub mod payment_schedule;

@@ -1,10 +1,11 @@
-use std::sync::Arc;
 use std::time::Duration;
 
 use sqlx::SqlitePool;
 use time::SignedDuration;
 
-use crate::app::event_bus::EventBus;
+use tokio::sync::broadcast;
+
+use crate::domain::event::OutboxMessage;
 use crate::infra::persistence::{self, sqlx_outbox_repository as outbox_repo};
 
 #[derive(Debug, Clone, PartialEq, serde::Deserialize)]
@@ -41,14 +42,22 @@ impl OutboxRelayConfig {
 /// it on a schedule instead of inline. Publishing itself can't fail (fire-and-forget, in
 /// memory), so every claimed message is marked processed right after; a subscriber that fails
 /// to handle it (e.g. Discord being down) is responsible for its own retry.
+pub fn event_bus() -> broadcast::Sender<OutboxMessage> {
+    broadcast::channel(256).0
+}
+
 pub struct OutboxRelayJob {
     pool: SqlitePool,
-    bus: Arc<dyn EventBus>,
+    bus: broadcast::Sender<OutboxMessage>,
     config: OutboxRelayConfig,
 }
 
 impl OutboxRelayJob {
-    pub fn new(pool: SqlitePool, bus: Arc<dyn EventBus>, config: OutboxRelayConfig) -> Self {
+    pub fn new(
+        pool: SqlitePool,
+        bus: broadcast::Sender<OutboxMessage>,
+        config: OutboxRelayConfig,
+    ) -> Self {
         Self { pool, bus, config }
     }
 
@@ -61,7 +70,7 @@ impl OutboxRelayJob {
         .await?;
         for message in claimed {
             let id = message.id;
-            self.bus.publish(message);
+            let _ = self.bus.send(message);
             outbox_repo::mark_processed(&self.pool, id).await?;
         }
         Ok(())
@@ -79,36 +88,10 @@ impl OutboxRelayJob {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Mutex;
-
-    use tokio::sync::broadcast;
     use uuid::Uuid;
 
     use super::*;
-    use crate::domain::event::OutboxMessage;
     use crate::infra::persistence::connect;
-
-    struct FakeBus {
-        published: Mutex<Vec<String>>,
-    }
-
-    impl FakeBus {
-        fn new() -> Self {
-            Self {
-                published: Mutex::new(Vec::new()),
-            }
-        }
-    }
-
-    impl EventBus for FakeBus {
-        fn publish(&self, message: OutboxMessage) {
-            self.published.lock().unwrap().push(message.aggregate_id);
-        }
-
-        fn subscribe(&self) -> broadcast::Receiver<OutboxMessage> {
-            broadcast::channel(1).1
-        }
-    }
 
     async fn some_event(pool: &SqlitePool) -> String {
         use crate::domain::payment::Event;
@@ -119,8 +102,23 @@ mod tests {
         aggregate_id.to_string()
     }
 
-    fn job(pool: SqlitePool, bus: Arc<dyn EventBus>) -> OutboxRelayJob {
-        OutboxRelayJob::new(pool, bus, OutboxRelayConfig::default())
+    fn job(pool: SqlitePool) -> (OutboxRelayJob, broadcast::Receiver<OutboxMessage>) {
+        job_with(pool, OutboxRelayConfig::default())
+    }
+
+    fn job_with(
+        pool: SqlitePool,
+        config: OutboxRelayConfig,
+    ) -> (OutboxRelayJob, broadcast::Receiver<OutboxMessage>) {
+        let bus = event_bus();
+        let rx = bus.subscribe();
+        (OutboxRelayJob::new(pool, bus, config), rx)
+    }
+
+    fn published(rx: &mut broadcast::Receiver<OutboxMessage>) -> Vec<String> {
+        std::iter::from_fn(|| rx.try_recv().ok())
+            .map(|message| message.aggregate_id)
+            .collect()
     }
 
     #[tokio::test]
@@ -128,14 +126,13 @@ mod tests {
         // given
         let pool = connect("sqlite::memory:").await.unwrap();
         some_event(&pool).await;
-        let bus = Arc::new(FakeBus::new());
-        let job = job(pool.clone(), bus.clone());
+        let (job, mut rx) = job(pool.clone());
 
         // when
         job.process().await.unwrap();
 
         // then
-        assert_eq!(bus.published.lock().unwrap().len(), 1);
+        assert_eq!(published(&mut rx).len(), 1);
         let remaining = outbox_repo::claim_batch(&pool, SignedDuration::seconds(0), 10)
             .await
             .unwrap();
@@ -148,14 +145,13 @@ mod tests {
         let pool = connect("sqlite::memory:").await.unwrap();
         let first = some_event(&pool).await;
         let second = some_event(&pool).await;
-        let bus = Arc::new(FakeBus::new());
-        let job = job(pool.clone(), bus.clone());
+        let (job, mut rx) = job(pool.clone());
 
         // when
         job.process().await.unwrap();
 
         // then
-        assert_eq!(*bus.published.lock().unwrap(), vec![first, second]);
+        assert_eq!(published(&mut rx), vec![first, second]);
     }
 
     #[tokio::test]
@@ -164,15 +160,14 @@ mod tests {
         let pool = connect("sqlite::memory:").await.unwrap();
         some_event(&pool).await;
         some_event(&pool).await;
-        let bus = Arc::new(FakeBus::new());
         let mut config = OutboxRelayConfig::default();
         config.batch_limit = 1;
-        let job = OutboxRelayJob::new(pool.clone(), bus.clone(), config);
+        let (job, mut rx) = job_with(pool.clone(), config);
 
         // when
         job.process().await.unwrap();
 
         // then
-        assert_eq!(bus.published.lock().unwrap().len(), 1);
+        assert_eq!(published(&mut rx).len(), 1);
     }
 }
