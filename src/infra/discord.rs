@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -21,7 +20,6 @@ use crate::domain::event::OutboxMessage;
 use crate::domain::payment::{Ack, Event, Payment, Source};
 use crate::infra::persistence::{self, sqlx_payment_repository as payment_repo};
 
-const CONFIRMATIONS_CHANNEL: &str = "confirmations";
 const APPROVE_EMOJI: &str = "✅";
 const REJECT_EMOJI: &str = "❎";
 const DELIVERY_ATTEMPTS: usize = 3;
@@ -37,7 +35,7 @@ enum Failure {
 
 pub struct DiscordConsumer {
     client: Client,
-    channels: HashMap<String, String>,
+    channel_id: Id<ChannelMarker>,
     pool: SqlitePool,
     bus: broadcast::Sender<OutboxMessage>,
     receiver: broadcast::Receiver<OutboxMessage>,
@@ -47,27 +45,19 @@ pub struct DiscordConsumer {
 impl DiscordConsumer {
     pub fn new(
         token: String,
-        channels: HashMap<String, String>,
+        channel_id: Id<ChannelMarker>,
         pool: SqlitePool,
         bus: broadcast::Sender<OutboxMessage>,
     ) -> Self {
         let receiver = bus.subscribe();
         Self {
             client: Client::new(token),
-            channels,
+            channel_id,
             pool,
             bus,
             receiver,
             nack_delay: NACK_DELAY,
         }
-    }
-
-    fn channel_id(&self, key: &str) -> Option<Id<ChannelMarker>> {
-        let raw = self.channels.get(key)?;
-        raw.parse::<u64>()
-            .inspect_err(|_| tracing::warn!(channel_key = key, raw, "invalid discord channel id"))
-            .ok()
-            .map(Id::new)
     }
 
     fn prompt(payment: &Payment) -> String {
@@ -169,11 +159,7 @@ impl DiscordConsumer {
             }
         }
 
-        let Some(channel_id) = self.channel_id(CONFIRMATIONS_CHANNEL) else {
-            tracing::warn!("no discord channel configured, will retry");
-            return Err(Failure::Retry);
-        };
-
+        let channel_id = self.channel_id;
         let content = Self::prompt(&payment);
         let message = match self
             .client
@@ -389,7 +375,9 @@ impl DiscordReactionListener {
             };
             match self.payment_id(reaction.message_id).await {
                 Ok(Some(payment_id)) => {
-                    let _ = self.payments.ack(payment_id, approved).await;
+                    if let Err(err) = self.payments.ack(payment_id, approved).await {
+                        tracing::warn!(%err, %payment_id, "failed to apply discord decision");
+                    }
                 }
                 Ok(None) => {}
                 Err(err) => tracing::warn!(%err, "failed to resolve reacted message"),
@@ -509,7 +497,6 @@ mod tests {
             .await
             .unwrap();
 
-        // no `[discord.channels]` configured, so reaching the send would be `Retry`.
         let msg = OutboxMessage::from(Event::Created { id: payment.id });
 
         assert_eq!(consumer.handle(&msg).await, Ok(()));
@@ -573,14 +560,24 @@ mod tests {
         assert_eq!(decision_from_emoji(&reject), Some(false));
     }
 
+    fn unreachable_discord() -> Client {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        std::thread::spawn(move || listener.incoming().for_each(drop));
+        Client::builder()
+            .proxy(addr.to_string(), true)
+            .ratelimiter(None)
+            .build()
+    }
+
     fn consumer_with(
         pool: sqlx::SqlitePool,
         bus: broadcast::Sender<OutboxMessage>,
     ) -> DiscordConsumer {
         let receiver = bus.subscribe();
         DiscordConsumer {
-            client: Client::new(String::new()),
-            channels: HashMap::new(),
+            client: unreachable_discord(),
+            channel_id: Id::new(1),
             pool,
             bus,
             receiver,
@@ -607,8 +604,6 @@ mod tests {
         let pool = connect("sqlite::memory:").await.unwrap();
         let payment = stored(&pool, email_source()).await;
         assert_eq!(payment.ack(), Ack::Pending);
-        // no `[discord.channels]` entry configured, so `post_prompt` returns `Retry` without
-        // ever touching the network.
         let msg = OutboxMessage::from(Event::Created { id: payment.id });
         let bus = event_bus();
         let mut spy = bus.subscribe();

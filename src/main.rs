@@ -22,6 +22,7 @@ use infra::email::OpenRouterParser;
 use infra::imap::GmailMailbox;
 use infra::secrets::Keyring;
 use infra::tray::PendingAckWatch;
+use twilight_model::id::Id;
 
 fn main() {
     infra::init();
@@ -75,21 +76,23 @@ async fn serve(config: Config, pending_ack: Arc<AtomicBool>) {
 
     let bus = outbox::event_bus();
     let missing = settings.missing(&Setting::DISCORD);
+    let discord_channel = settings
+        .get(Setting::DiscordChannel)
+        .parse()
+        .ok()
+        .and_then(Id::new_checked);
     if !missing.is_empty() {
         tracing::warn!(
             ?missing,
             "discord disabled, payment events will stay in the outbox"
         );
-    } else {
+    } else if let Some(channel_id) = discord_channel {
         tracing::info!("discord enabled");
         // subscribes before the relay job below can publish anything.
         tokio::spawn(
             DiscordConsumer::new(
                 settings.get(Setting::DiscordToken),
-                HashMap::from([(
-                    "confirmations".to_string(),
-                    settings.get(Setting::DiscordChannel),
-                )]),
+                channel_id,
                 pool.clone(),
                 bus.clone(),
             )
@@ -104,6 +107,8 @@ async fn serve(config: Config, pending_ack: Arc<AtomicBool>) {
             )
             .run(),
         );
+    } else {
+        tracing::warn!("discord disabled, discord_channel is not a valid id");
     }
 
     let missing = settings.missing(&Setting::EMAIL);
