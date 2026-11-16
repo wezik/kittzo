@@ -46,7 +46,7 @@ impl StartupTask for PendingAckWatch {
     }
 }
 
-pub fn spawn(server_port: u16, paused: Arc<AtomicBool>, pending_ack: Arc<AtomicBool>) -> ! {
+pub fn spawn(server_port: u16, pending_ack: Arc<AtomicBool>) -> ! {
     let event_loop = EventLoopBuilder::<MenuEvent>::with_user_event().build();
 
     let proxy = event_loop.create_proxy();
@@ -62,9 +62,8 @@ pub fn spawn(server_port: u16, paused: Arc<AtomicBool>, pending_ack: Arc<AtomicB
         cfg!(target_os = "windows"),
         None,
     );
-    let pause_resume = MenuItem::with_id("pause-resume", "Pause", true, None);
     let quit = MenuItem::with_id("quit", "Quit", true, None);
-    menu.append_items(&[&open_ui, &pay, &pause_resume, &quit])
+    menu.append_items(&[&open_ui, &pay, &quit])
         .expect("failed to build tray menu");
 
     let mut icon = Some(load_icon(ICON_BYTES));
@@ -99,11 +98,6 @@ pub fn spawn(server_port: u16, paused: Arc<AtomicBool>, pending_ack: Arc<AtomicB
             }
             Event::UserEvent(event) if event.id == "pay" => {
                 open_payment_scripts();
-            }
-            Event::UserEvent(event) if event.id == "pause-resume" => {
-                let now_paused = !paused.load(Ordering::SeqCst);
-                paused.store(now_paused, Ordering::SeqCst);
-                pause_resume.set_text(if now_paused { "Resume" } else { "Pause" });
             }
             Event::UserEvent(event) if event.id == "quit" => {
                 tray_icon.take();

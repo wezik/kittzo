@@ -33,7 +33,6 @@ fn main() {
 
     let config = Config::load();
     let server_port = config.server_port;
-    let paused = Arc::new(AtomicBool::new(false));
     let pending_ack = Arc::new(AtomicBool::new(false));
     let tray_pending_ack = pending_ack.clone();
 
@@ -46,7 +45,7 @@ fn main() {
     });
 
     // the tray needs the OS event loop on the main thread, so the server runs on its own thread.
-    infra::tray::spawn(server_port, paused, tray_pending_ack);
+    infra::tray::spawn(server_port, tray_pending_ack);
 }
 
 async fn serve(config: Config, pending_ack: Arc<AtomicBool>) {
