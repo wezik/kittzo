@@ -207,8 +207,8 @@ where
 fn ack_str(ack: &Ack) -> &'static str {
     match ack {
         Ack::Pending => "pending",
-        Ack::Confirmed { value: true } => "accepted",
-        Ack::Confirmed { value: false } => "rejected",
+        Ack::Accepted => "accepted",
+        Ack::Rejected => "rejected",
     }
 }
 
@@ -254,8 +254,8 @@ fn row_to_payment(row: PaymentRow) -> Result<Payment, Error> {
 
     let ack = match row.ack.as_str() {
         "pending" => Ack::Pending,
-        "accepted" => Ack::Confirmed { value: true },
-        "rejected" => Ack::Confirmed { value: false },
+        "accepted" => Ack::Accepted,
+        "rejected" => Ack::Rejected,
         other => return Err(corrupt(&format!("invalid ack {other}"))),
     };
 
@@ -488,10 +488,7 @@ mod tests {
             .unwrap();
 
         // then
-        assert_eq!(
-            find(&pool, payment.id).await.unwrap().ack,
-            Ack::Confirmed { value: false }
-        );
+        assert_eq!(find(&pool, payment.id).await.unwrap().ack, Ack::Rejected);
     }
 
     #[tokio::test]

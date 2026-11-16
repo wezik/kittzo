@@ -52,8 +52,8 @@ impl From<payment::Ack> for AckResponse {
     fn from(ack: payment::Ack) -> Self {
         match ack {
             payment::Ack::Pending => AckResponse::Pending,
-            payment::Ack::Confirmed { value: true } => AckResponse::Accepted,
-            payment::Ack::Confirmed { value: false } => AckResponse::Rejected,
+            payment::Ack::Accepted => AckResponse::Accepted,
+            payment::Ack::Rejected => AckResponse::Rejected,
         }
     }
 }

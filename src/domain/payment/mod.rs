@@ -45,7 +45,8 @@ pub enum Source {
 #[derive(Clone, Debug, PartialEq)]
 pub enum Ack {
     Pending,
-    Confirmed { value: bool },
+    Accepted,
+    Rejected,
 }
 
 impl Payment {
@@ -54,7 +55,7 @@ impl Payment {
         let id = Uuid::new_v4();
 
         let ack = match source {
-            Source::Manual => Ack::Confirmed { value: true },
+            Source::Manual => Ack::Accepted,
             _ => Ack::Pending,
         };
 
@@ -75,40 +76,33 @@ impl Payment {
     pub fn pay(&mut self) -> Result<Event, Error> {
         let now = OffsetDateTime::now_utc();
         let next = State::Paid { paid_at: now };
-
-        // invariant guard
-        if self.state != State::Unpaid || self.ack != (Ack::Confirmed { value: true }) {
-            let err = Error::InvalidTransition {
-                from: format!("{:?} {:?}", self.state, self.ack),
-                to: format!("{:?}", next),
-            };
-
-            return Err(err);
+        if !matches!((&self.state, &self.ack), (State::Unpaid, Ack::Accepted)) {
+            return Err(self.invalid_transition(&next));
         }
-
         self.state = next;
         self.updated_at = now;
-
         Ok(Event::Finished { id: self.id })
     }
 
     pub fn ack(&mut self, accepted: bool) -> Result<Event, Error> {
-        let now = OffsetDateTime::now_utc();
-        let next = Ack::Confirmed { value: accepted };
-
-        // invariant guard
-        if self.ack != Ack::Pending || self.state != State::Unpaid {
-            let err = Error::InvalidTransition {
-                from: format!("{:?} {:?}", self.state, self.ack),
-                to: format!("{:?}", next),
-            };
-
-            return Err(err);
+        let next = if accepted {
+            Ack::Accepted
+        } else {
+            Ack::Rejected
+        };
+        if !matches!((&self.state, &self.ack), (State::Unpaid, Ack::Pending)) {
+            return Err(self.invalid_transition(&next));
         }
-
         self.ack = next;
-        self.updated_at = now;
+        self.updated_at = OffsetDateTime::now_utc();
         Ok(Event::Acked { id: self.id })
+    }
+
+    fn invalid_transition(&self, to: &impl std::fmt::Debug) -> Error {
+        Error::InvalidTransition {
+            from: format!("{:?} {:?}", self.state, self.ack),
+            to: format!("{to:?}"),
+        }
     }
 }
 
@@ -182,7 +176,7 @@ mod tests {
         let total = some_money();
         let details = some_standard_details();
         let cases = vec![
-            (some_payment_source_manual(), Ack::Confirmed { value: true }),
+            (some_payment_source_manual(), Ack::Accepted),
             (some_payment_source_schedule(), Ack::Pending),
             (some_payment_source_email(), Ack::Pending),
         ];
@@ -216,7 +210,7 @@ mod tests {
 
     #[test]
     fn pay_requires_accepted_ack() {
-        for ack in [Ack::Pending, Ack::Confirmed { value: false }] {
+        for ack in [Ack::Pending, Ack::Rejected] {
             // given
             let mut payment = some_payment();
             payment.ack = ack;
