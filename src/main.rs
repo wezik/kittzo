@@ -25,6 +25,7 @@ use infra::tray::PendingAckWatch;
 fn main() {
     infra::init();
     tracing::info!("starting up");
+    infra::enter_home_dir();
 
     let config = Config::load();
     let server_port = config.server_port;
