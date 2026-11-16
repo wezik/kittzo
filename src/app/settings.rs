@@ -104,7 +104,7 @@ pub struct SettingView {
 }
 
 #[derive(Debug, thiserror::Error)]
-pub enum SettingsError {
+pub enum Error {
     #[error("unknown setting {0}")]
     Unknown(String),
 
@@ -115,7 +115,7 @@ pub enum SettingsError {
     Secrets(#[from] SecretsError),
 }
 
-pub struct SettingsService {
+pub struct Service {
     pool: SqlitePool,
     secrets: Arc<dyn Secrets>,
     defaults: HashMap<Setting, String>,
@@ -123,7 +123,7 @@ pub struct SettingsService {
     updating: tokio::sync::Mutex<()>,
 }
 
-impl SettingsService {
+impl Service {
     pub fn new(
         pool: SqlitePool,
         secrets: Arc<dyn Secrets>,
@@ -139,7 +139,7 @@ impl SettingsService {
         }
     }
 
-    pub async fn resolve(&self) -> Result<Settings, SettingsError> {
+    pub async fn resolve(&self) -> Result<Settings, Error> {
         let mut stored = repo::all(&self.pool).await?;
         stored.extend(
             self.blocking(|secrets| {
@@ -175,7 +175,7 @@ impl SettingsService {
         Ok(Settings(values))
     }
 
-    pub async fn view(&self) -> Result<Vec<SettingView>, SettingsError> {
+    pub async fn view(&self) -> Result<Vec<SettingView>, Error> {
         let settings = self.resolve().await?;
         Ok(Setting::ALL
             .into_iter()
@@ -193,12 +193,12 @@ impl SettingsService {
             .collect())
     }
 
-    pub async fn update(&self, changes: HashMap<String, String>) -> Result<(), SettingsError> {
+    pub async fn update(&self, changes: HashMap<String, String>) -> Result<(), Error> {
         let changes = changes
             .into_iter()
             .map(|(name, value)| match Setting::parse(&name) {
                 Some(setting) => Ok((setting, value)),
-                None => Err(SettingsError::Unknown(name)),
+                None => Err(Error::Unknown(name)),
             })
             .collect::<Result<Vec<_>, _>>()?;
         let (secrets, plain): (Vec<_>, Vec<_>) = changes
@@ -218,7 +218,7 @@ impl SettingsService {
             .blocking(move |store| write_secrets(store, &secrets))
             .await;
         let result = match written {
-            Ok(()) => commit_tx(tx).await.map_err(SettingsError::from),
+            Ok(()) => commit_tx(tx).await.map_err(Error::from),
             Err(err) => Err(err.into()),
         };
         if result.is_err() {
@@ -284,7 +284,7 @@ mod tests {
         secrets: Arc<MemorySecrets>,
         defaults: &[(Setting, &str)],
         overrides: &[(Setting, &str)],
-    ) -> SettingsService {
+    ) -> Service {
         let pool = connect("sqlite::memory:").await.unwrap();
         let map = |pairs: &[(Setting, &str)]| {
             pairs
@@ -292,7 +292,7 @@ mod tests {
                 .map(|(name, value)| (*name, value.to_string()))
                 .collect()
         };
-        SettingsService::new(pool, secrets, map(defaults), map(overrides))
+        Service::new(pool, secrets, map(defaults), map(overrides))
     }
 
     fn change(name: &str, value: &str) -> HashMap<String, String> {
@@ -397,7 +397,7 @@ mod tests {
         let secrets = Arc::new(FailingSecrets(MemorySecrets::default(), "discord_token"));
         secrets.0.set("openrouter_api_key", "old").unwrap();
         let pool = connect("sqlite::memory:").await.unwrap();
-        let service = SettingsService::new(pool, secrets.clone(), HashMap::new(), HashMap::new());
+        let service = Service::new(pool, secrets.clone(), HashMap::new(), HashMap::new());
 
         let result = service
             .update(HashMap::from([
@@ -407,7 +407,7 @@ mod tests {
             ]))
             .await;
 
-        assert!(matches!(result, Err(SettingsError::Secrets(_))));
+        assert!(matches!(result, Err(Error::Secrets(_))));
         assert!(repo::all(&service.pool).await.unwrap().is_empty());
         assert_eq!(
             secrets.get("openrouter_api_key").unwrap(),
@@ -421,7 +421,7 @@ mod tests {
 
         assert!(matches!(
             service.update(change("bogus", "1")).await,
-            Err(SettingsError::Unknown(_))
+            Err(Error::Unknown(_))
         ));
     }
 

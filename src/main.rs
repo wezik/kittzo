@@ -12,9 +12,9 @@ use app::email;
 use app::email_watch_job::EmailWatchJob;
 use app::outbox::{self, OutboxRelayJob};
 use app::payment;
-use app::payment_schedule::PaymentScheduleService;
+use app::payment_schedule;
 use app::payment_schedule_job::PaymentScheduleJob;
-use app::settings::{self, Setting, SettingsService};
+use app::settings::{self, Setting};
 use infra::Config;
 use infra::config::OpenRouterConfig;
 use infra::discord::{DiscordConsumer, DiscordReactionListener};
@@ -50,7 +50,7 @@ async fn serve(config: Config, pending_ack: Arc<AtomicBool>) {
         .await
         .expect("failed to connect to database"); // intentional panic, db is a necessary dependency
 
-    let settings_service = Arc::new(SettingsService::new(
+    let settings_service = Arc::new(settings::Service::new(
         pool.clone(),
         Arc::new(Keyring),
         HashMap::from([
@@ -66,7 +66,7 @@ async fn serve(config: Config, pending_ack: Arc<AtomicBool>) {
         .expect("failed to load settings");
 
     let payment_service = Arc::new(payment::Service::new(pool.clone()));
-    let schedule_service = Arc::new(PaymentScheduleService::new(pool.clone()));
+    let schedule_service = Arc::new(payment_schedule::Service::new(pool.clone()));
 
     tokio::spawn(
         PaymentScheduleJob::new(schedule_service.clone(), config.payment_schedule.clone()).run(),

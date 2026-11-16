@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use time::OffsetDateTime;
 
-use crate::app::payment_schedule::PaymentScheduleService;
+use crate::app::payment_schedule;
 
 #[derive(Debug, Clone, PartialEq, serde::Deserialize)]
 #[serde(default)]
@@ -26,13 +26,13 @@ impl PaymentScheduleJobConfig {
 }
 
 pub struct PaymentScheduleJob {
-    schedule_service: Arc<PaymentScheduleService>,
+    schedule_service: Arc<payment_schedule::Service>,
     config: PaymentScheduleJobConfig,
 }
 
 impl PaymentScheduleJob {
     pub fn new(
-        schedule_service: Arc<PaymentScheduleService>,
+        schedule_service: Arc<payment_schedule::Service>,
         config: PaymentScheduleJobConfig,
     ) -> Self {
         Self {

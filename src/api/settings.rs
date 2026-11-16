@@ -7,7 +7,7 @@ use axum::response::{IntoResponse, Json};
 use axum::routing::get;
 use serde::Serialize;
 
-use crate::app::settings::{SettingView, SettingsError};
+use crate::app::settings::{Error, SettingView};
 
 use super::AppState;
 
@@ -59,9 +59,9 @@ async fn update(
     }
 }
 
-fn error(err: SettingsError) -> axum::response::Response {
+fn error(err: Error) -> axum::response::Response {
     match err {
-        SettingsError::Unknown(_) => (StatusCode::UNPROCESSABLE_ENTITY, err.to_string()),
+        Error::Unknown(_) => (StatusCode::UNPROCESSABLE_ENTITY, err.to_string()),
         _ => {
             tracing::error!(%err, "settings request failed");
             (StatusCode::INTERNAL_SERVER_ERROR, err.to_string())

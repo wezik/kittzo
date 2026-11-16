@@ -10,12 +10,12 @@ use crate::infra::persistence::{
     self, sqlx_outbox_repository, sqlx_payment_repository, sqlx_payment_schedule_repository,
 };
 
-pub struct PaymentScheduleService {
+pub struct Service {
     pool: SqlitePool,
 }
 
 #[derive(Debug, thiserror::Error)]
-pub enum PaymentScheduleError {
+pub enum Error {
     #[error("payment schedule already exists")]
     AlreadyExists,
 
@@ -32,18 +32,18 @@ pub enum PaymentScheduleError {
     Persistence(persistence::Error),
 }
 
-impl From<persistence::Error> for PaymentScheduleError {
+impl From<persistence::Error> for Error {
     fn from(err: persistence::Error) -> Self {
         match err {
-            persistence::Error::AlreadyExists => PaymentScheduleError::AlreadyExists,
-            persistence::Error::NotFound => PaymentScheduleError::NotFound,
-            persistence::Error::ConcurrentUpdate => PaymentScheduleError::ConcurrentUpdate,
-            err => PaymentScheduleError::Persistence(err),
+            persistence::Error::AlreadyExists => Error::AlreadyExists,
+            persistence::Error::NotFound => Error::NotFound,
+            persistence::Error::ConcurrentUpdate => Error::ConcurrentUpdate,
+            err => Error::Persistence(err),
         }
     }
 }
 
-impl PaymentScheduleService {
+impl Service {
     pub fn new(pool: SqlitePool) -> Self {
         Self { pool }
     }
@@ -56,7 +56,7 @@ impl PaymentScheduleService {
         recipient: String,
         recurrence: Recurrence,
         starts_at: Date,
-    ) -> Result<PaymentSchedule, PaymentScheduleError> {
+    ) -> Result<PaymentSchedule, Error> {
         let schedule = PaymentSchedule::new(
             total,
             title_template,
@@ -68,17 +68,17 @@ impl PaymentScheduleService {
         Ok(sqlx_payment_schedule_repository::create(&self.pool, &schedule).await?)
     }
 
-    pub async fn find_all(&self) -> Result<Vec<PaymentSchedule>, PaymentScheduleError> {
+    pub async fn find_all(&self) -> Result<Vec<PaymentSchedule>, Error> {
         Ok(sqlx_payment_schedule_repository::find_all(&self.pool).await?)
     }
 
-    pub async fn delete(&self, id: Uuid) -> Result<(), PaymentScheduleError> {
+    pub async fn delete(&self, id: Uuid) -> Result<(), Error> {
         Ok(sqlx_payment_schedule_repository::delete(&self.pool, id).await?)
     }
 
     /// Returns how many payments were created. A schedule that fails is logged and left as
     /// it was, so the next run retries it.
-    pub async fn process_due(&self, today: Date) -> Result<usize, PaymentScheduleError> {
+    pub async fn process_due(&self, today: Date) -> Result<usize, Error> {
         let due = sqlx_payment_schedule_repository::find_due(&self.pool, today).await?;
         let mut created = 0;
         for schedule in due {
@@ -91,11 +91,7 @@ impl PaymentScheduleService {
         Ok(created)
     }
 
-    async fn process(
-        &self,
-        mut schedule: PaymentSchedule,
-        today: Date,
-    ) -> Result<usize, PaymentScheduleError> {
+    async fn process(&self, mut schedule: PaymentSchedule, today: Date) -> Result<usize, Error> {
         let produced = schedule.produce(today)?;
         let count = produced.len();
 
@@ -120,9 +116,9 @@ mod tests {
     use crate::domain::payment_schedule::some_schedule;
     use crate::infra::persistence::connect;
 
-    async fn setup() -> (PaymentScheduleService, SqlitePool) {
+    async fn setup() -> (Service, SqlitePool) {
         let pool = connect("sqlite::memory:").await.unwrap();
-        (PaymentScheduleService::new(pool.clone()), pool)
+        (Service::new(pool.clone()), pool)
     }
 
     fn today() -> Date {
@@ -198,7 +194,7 @@ mod tests {
 
         let err = service.process(schedule, today()).await.unwrap_err();
 
-        assert!(matches!(err, PaymentScheduleError::ConcurrentUpdate));
+        assert!(matches!(err, Error::ConcurrentUpdate));
         assert!(payments(&pool).await.is_empty());
     }
 
@@ -218,7 +214,7 @@ mod tests {
             .unwrap_err();
         assert!(matches!(
             err,
-            PaymentScheduleError::Payment(payment::Error::InvalidRecipient)
+            Error::Payment(payment::Error::InvalidRecipient)
         ));
     }
 }

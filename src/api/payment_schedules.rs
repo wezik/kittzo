@@ -10,7 +10,7 @@ use uuid::Uuid;
 
 use crate::api::serializers::details::DetailsDto;
 use crate::api::serializers::money::MoneyDto;
-use crate::app::payment_schedule::PaymentScheduleError;
+use crate::app::payment_schedule::Error;
 use crate::domain::payment::AccountNumber;
 use crate::domain::payment_schedule::{PaymentSchedule, Recurrence};
 
@@ -126,8 +126,8 @@ async fn create(
             Json(PaymentScheduleResponse::from(created)),
         )
             .into_response(),
-        Err(PaymentScheduleError::AlreadyExists) => StatusCode::CONFLICT.into_response(),
-        Err(PaymentScheduleError::Payment(err)) => {
+        Err(Error::AlreadyExists) => StatusCode::CONFLICT.into_response(),
+        Err(Error::Payment(err)) => {
             (StatusCode::UNPROCESSABLE_ENTITY, err.to_string()).into_response()
         }
         Err(err) => {
@@ -156,7 +156,7 @@ async fn list(State(state): State<AppState>) -> impl IntoResponse {
 async fn remove(State(state): State<AppState>, Path(id): Path<Uuid>) -> impl IntoResponse {
     match state.schedule_service.delete(id).await {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
-        Err(PaymentScheduleError::NotFound) => StatusCode::NOT_FOUND.into_response(),
+        Err(Error::NotFound) => StatusCode::NOT_FOUND.into_response(),
         Err(err) => {
             tracing::error!(%err, "failed to delete payment schedule");
             StatusCode::INTERNAL_SERVER_ERROR.into_response()
