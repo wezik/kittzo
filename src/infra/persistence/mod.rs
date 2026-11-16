@@ -13,6 +13,7 @@ pub mod sqlx_outbox_repository;
 pub mod sqlx_payment_repository;
 pub mod sqlx_payment_schedule_repository;
 pub mod sqlx_processed_email_repository;
+pub mod sqlx_settings_repository;
 
 #[derive(Debug, PartialEq, thiserror::Error)]
 pub enum Error {

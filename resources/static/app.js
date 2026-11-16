@@ -3,7 +3,7 @@ const TAX_FORMS = { "VAT-7": "VAT-7", PPL: "PPE" };
 function escapeHtml(text) {
   const div = document.createElement("div");
   div.textContent = text ?? "";
-  return div.innerHTML;
+  return div.innerHTML.replace(/"/g, "&quot;").replace(/'/g, "&#39;");
 }
 
 function formatDateTime(iso) {
@@ -276,6 +276,68 @@ document.getElementById("schedule-form").addEventListener("submit", async (e) =>
   };
   if (await api("POST", "/payment-schedules", body)) e.target.reset();
   refresh();
+});
+
+// Settings
+
+const SETTING_LABELS = {
+  discord_token: "Bot token",
+  discord_channel: "Confirmations channel id",
+  imap_host: "IMAP host",
+  imap_user: "IMAP user",
+  imap_app_password: "App password",
+  imap_label: "Label",
+  openrouter_api_key: "API key",
+  openrouter_model: "Model",
+};
+
+function settingField(s) {
+  const placeholder = s.secret ? (s.is_set ? "saved, blank keeps it" : "not set") : "";
+  const value = s.secret ? "" : s.value;
+  const lock = s.overridden ? ` disabled title="set by KITTZO_${s.key.toUpperCase()}"` : "";
+  const clear = s.secret && s.is_set && !s.overridden
+    ? `<button type="button" class="danger" data-clear="${s.key}">Clear</button>`
+    : "";
+  return `<label>${escapeHtml(SETTING_LABELS[s.key] ?? s.key)}<input name="${s.key}"
+    type="${s.secret ? "password" : "text"}" autocomplete="off"
+    value="${escapeHtml(value)}" placeholder="${placeholder}"${lock} /></label>${clear}`;
+}
+
+async function loadSettings() {
+  const settings = await fetch("/settings").then((r) => r.json());
+  document.querySelectorAll("#settings-form [data-group]").forEach((group) => {
+    group.innerHTML = settings
+      .filter((s) => s.key.startsWith(group.dataset.group + "_"))
+      .map(settingField)
+      .join("");
+  });
+}
+
+document.getElementById("settings-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const body = {};
+  for (const input of e.target.querySelectorAll("input:not(:disabled)")) {
+    if (input.type === "password" && !input.value) continue;
+    body[input.name] = input.value;
+  }
+  await api("PUT", "/settings", body);
+  loadSettings();
+});
+
+document.getElementById("settings-form").addEventListener("click", async (e) => {
+  const key = e.target.dataset.clear;
+  if (!key) return;
+  await api("PUT", "/settings", { [key]: "" });
+  loadSettings();
+});
+
+document.querySelector(".tabs").addEventListener("click", (e) => {
+  const tab = e.target.dataset.tab;
+  if (!tab) return;
+  document.querySelectorAll(".tabs button").forEach((b) => b.setAttribute("aria-selected", b === e.target));
+  document.getElementById("tab-payments").hidden = tab !== "payments";
+  document.getElementById("tab-settings").hidden = tab !== "settings";
+  if (tab === "settings") loadSettings();
 });
 
 // Refresh

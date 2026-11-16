@@ -38,7 +38,11 @@ mise run dev
 
 The UI is at http://127.0.0.1:7878. The tray's "Open UI" item opens it too.
 
-Config lives in `kittzo.toml`. Kittzo replaces `${NAME}` in it with the env var `NAME`. That keeps secrets out of git.
+Integrations (Discord, email, OpenRouter) are set up in the UI's Settings tab. Secrets go to the OS keyring, everything else to the database. Changes apply on restart. An integration with missing settings stays off, and the startup log says which settings are missing. On Linux the keyring needs a Secret Service provider, such as GNOME Keyring.
+
+`kittzo.toml` holds safe defaults only, such as poll intervals and the OpenRouter model.
+
+Env vars from `.env.example` override the matching setting, which the UI then shows as locked. Use them for dev.
 
 Kittzo looks for its files (`kittzo.toml`, `kittzo.db`, `resources/static/`, `scripts/`) in its home dir: `KITTZO_HOME` if set, else the directory holding the executable. `mise run dev` sets `KITTZO_HOME` to the repo root, so each worktree runs with its own config and database.
 
