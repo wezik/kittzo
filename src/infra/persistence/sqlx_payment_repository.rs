@@ -8,7 +8,7 @@ use crate::domain::payment::{
 };
 use crate::domain::version::Version;
 
-use crate::infra::persistence::{Error, details_columns, details_from_columns};
+use crate::infra::persistence::{Error, details_columns, details_from_columns, update_conflict};
 
 // sqlite's `Uuid` decode expects a 16-byte BLOB, but ids are stored as TEXT (`.to_string()`),
 // so `id`/`schedule_id` are decoded as `String` here and parsed by hand in `row_to_payment`.
@@ -120,18 +120,7 @@ pub async fn update(conn: &mut SqliteConnection, payment: &Payment) -> Result<Pa
     .map_err(Error::from)?;
 
     if result.rows_affected() == 0 {
-        let exists = sqlx::query("SELECT 1 FROM payments WHERE id = ?")
-            .bind(payment.id.to_string())
-            .fetch_optional(&mut *conn)
-            .await
-            .map_err(Error::from)?
-            .is_some();
-
-        return Err(if exists {
-            Error::ConcurrentUpdate
-        } else {
-            Error::NotFound
-        });
+        return Err(update_conflict(conn, "SELECT 1 FROM payments WHERE id = ?", payment.id).await);
     }
     tracing::info!(id = %payment.id, status, "updated payment");
 

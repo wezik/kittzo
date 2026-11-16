@@ -7,7 +7,7 @@ use crate::domain::payment_schedule::{PaymentSchedule, Recurrence};
 use crate::domain::version::Version;
 use crate::infra::persistence::Error;
 
-use super::{details_columns, details_from_columns, total_from_row};
+use super::{details_columns, details_from_columns, total_from_row, update_conflict};
 
 pub async fn create<'e, E>(
     executor: E,
@@ -76,18 +76,12 @@ pub async fn update(
     .map_err(Error::from)?;
 
     if result.rows_affected() == 0 {
-        let exists = sqlx::query("SELECT 1 FROM payment_schedules WHERE id = ?")
-            .bind(schedule.id.to_string())
-            .fetch_optional(&mut *conn)
-            .await
-            .map_err(Error::from)?
-            .is_some();
-
-        return Err(if exists {
-            Error::ConcurrentUpdate
-        } else {
-            Error::NotFound
-        });
+        return Err(update_conflict(
+            conn,
+            "SELECT 1 FROM payment_schedules WHERE id = ?",
+            schedule.id,
+        )
+        .await);
     }
 
     tracing::info!(schedule_id = %schedule.id, "updated payment schedule");

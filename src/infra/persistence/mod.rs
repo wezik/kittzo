@@ -2,7 +2,8 @@ use std::str::FromStr;
 use std::time::Duration;
 
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
-use sqlx::{Row, SqlitePool, sqlite::SqliteRow};
+use sqlx::{Row, SqliteConnection, SqlitePool, sqlite::SqliteRow};
+use uuid::Uuid;
 
 use serde_json::{Value, json};
 
@@ -31,6 +32,22 @@ pub enum Error {
 
     #[error(transparent)]
     Unexpected(#[from] sqlx::Error),
+}
+
+pub(crate) async fn update_conflict(
+    conn: &mut SqliteConnection,
+    exists_sql: &'static str,
+    id: Uuid,
+) -> Error {
+    match sqlx::query(exists_sql)
+        .bind(id.to_string())
+        .fetch_optional(conn)
+        .await
+    {
+        Ok(Some(_)) => Error::ConcurrentUpdate,
+        Ok(None) => Error::NotFound,
+        Err(err) => err.into(),
+    }
 }
 
 // one connection avoids `SQLITE_BUSY` contention between writers.
