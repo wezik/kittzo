@@ -58,7 +58,6 @@ mod tests {
     use crate::domain::payment::{self as domain, Details, Payment, Source, TaxForm};
     use crate::infra::persistence::connect;
     use async_trait::async_trait;
-    use uuid::Uuid;
 
     struct FakeParser(Result<Vec<Result<Details, domain::Error>>, email::Error>);
 
@@ -88,7 +87,6 @@ mod tests {
 
     fn email() -> Email {
         Email {
-            id: Uuid::new_v4(),
             external_id: "<m1@mail.gmail.com>".into(),
             from: "ksiegowa@biuro.pl".into(),
             subject: "Rozliczenie 09/2026".into(),

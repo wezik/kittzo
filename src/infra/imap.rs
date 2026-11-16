@@ -2,7 +2,6 @@ use std::collections::HashSet;
 
 use async_trait::async_trait;
 use mail_parser::MessageParser;
-use uuid::Uuid;
 
 use crate::domain::email::{Email, Mailbox, MailboxError, Pdf};
 
@@ -93,7 +92,6 @@ fn email_from_raw(message_id: String, raw: &[u8]) -> Email {
     let Some(message) = MessageParser::default().parse(raw) else {
         tracing::warn!(%message_id, "unparsable email");
         return Email {
-            id: Uuid::new_v4(),
             external_id: message_id,
             from: String::new(),
             subject: String::new(),
@@ -149,7 +147,6 @@ fn email_from_raw(message_id: String, raw: &[u8]) -> Email {
     tracing::debug!(%message_id, %text, "email body sent to the parser");
 
     Email {
-        id: Uuid::new_v4(),
         external_id: message_id,
         from,
         subject,
@@ -171,6 +168,9 @@ fn truncate(mut text: String, limit: usize) -> String {
 
 #[cfg(test)]
 pub(crate) mod tests {
+    use base64::Engine;
+    use base64::engine::general_purpose::STANDARD as BASE64;
+
     use super::*;
 
     pub(crate) fn pdf_with_text(line: &str) -> Vec<u8> {
@@ -203,27 +203,6 @@ pub(crate) mod tests {
         pdf.into_bytes()
     }
 
-    fn base64(bytes: &[u8]) -> String {
-        const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-        let mut out = String::new();
-        for chunk in bytes.chunks(3) {
-            let b = [
-                chunk[0],
-                *chunk.get(1).unwrap_or(&0),
-                *chunk.get(2).unwrap_or(&0),
-            ];
-            let n = (b[0] as u32) << 16 | (b[1] as u32) << 8 | b[2] as u32;
-            for i in 0..4 {
-                if i <= chunk.len() {
-                    out.push(ALPHABET[(n >> (18 - 6 * i) & 63) as usize] as char);
-                } else {
-                    out.push('=');
-                }
-            }
-        }
-        out
-    }
-
     fn mime(attachments: &[(&str, &str, Vec<u8>)]) -> Vec<u8> {
         let mut raw = String::from(
             "From: Biuro Rachunkowe <ksiegowa@biuro.pl>\r\n\
@@ -240,7 +219,7 @@ pub(crate) mod tests {
                 "--b\r\nContent-Type: {content_type}; name=\"{name}\"\r\n\
                  Content-Disposition: attachment; filename=\"{name}\"\r\n\
                  Content-Transfer-Encoding: base64\r\n\r\n{}\r\n",
-                base64(bytes)
+                BASE64.encode(bytes)
             ));
         }
         raw.push_str("--b--\r\n");

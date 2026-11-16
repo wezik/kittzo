@@ -129,7 +129,6 @@ mod tests {
     use crate::domain::payment::{Payment, Source, some_standard_details};
     use crate::infra::persistence::connect;
     use async_trait::async_trait;
-    use uuid::Uuid;
 
     struct FakeMailbox(Vec<Email>);
 
@@ -172,7 +171,6 @@ mod tests {
 
     fn email(id: &str) -> Email {
         Email {
-            id: Uuid::new_v4(),
             external_id: id.into(),
             from: "a@x.pl".into(),
             subject: "Faktura".into(),

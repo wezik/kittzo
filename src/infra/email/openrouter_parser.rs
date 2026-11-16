@@ -277,8 +277,6 @@ fn payment_from_raw(
 mod tests {
     use std::assert_matches;
 
-    use uuid::Uuid;
-
     use super::*;
     use crate::domain::email::{Parser, Pdf};
 
@@ -373,7 +371,6 @@ mod tests {
 
     fn email(pdfs: Vec<Pdf>) -> Email {
         Email {
-            id: Uuid::new_v4(),
             external_id: "<m@x>".into(),
             from: "a@b.pl".into(),
             subject: "Faktura".into(),
