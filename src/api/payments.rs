@@ -4,16 +4,15 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Json, Response};
 use axum::routing::{get, post};
 use serde::{Deserialize, Serialize};
+use time::OffsetDateTime;
 use uuid::Uuid;
 
 use crate::api::serializers::details::DetailsDto;
 use crate::api::serializers::money::MoneyDto;
-use crate::api::serializers::version::VersionDto;
 use crate::app;
 use crate::domain::payment::{self, ListQueryAckFilter, ListQueryPaidFilter, Payment};
 
 use super::AppState;
-use super::serializers::rfc3339::OffsetDateTimeDto;
 
 // Mappings
 
@@ -27,16 +26,19 @@ pub(super) struct CreatePaymentRequest {
 #[derive(Serialize)]
 pub(super) struct PaymentResponse {
     id: Uuid,
-    version: VersionDto,
+    version: u32,
     display_title: String,
     total: MoneyDto,
     #[serde(flatten)]
     details: DetailsDto,
     status: PaymentStatusResponse,
     ack: AckResponse,
-    paid_at: Option<OffsetDateTimeDto>,
-    created_at: OffsetDateTimeDto,
-    updated_at: OffsetDateTimeDto,
+    #[serde(with = "time::serde::rfc3339::option")]
+    paid_at: Option<OffsetDateTime>,
+    #[serde(with = "time::serde::rfc3339")]
+    created_at: OffsetDateTime,
+    #[serde(with = "time::serde::rfc3339")]
+    updated_at: OffsetDateTime,
     source: PaymentSourceDto,
 }
 
@@ -69,7 +71,7 @@ impl From<Payment> for PaymentResponse {
     fn from(payment: Payment) -> Self {
         let (status, paid_at) = match payment.state() {
             payment::State::Unpaid => (PaymentStatusResponse::Unpaid, None),
-            payment::State::Paid { paid_at } => (PaymentStatusResponse::Paid, Some(paid_at.into())),
+            payment::State::Paid { paid_at } => (PaymentStatusResponse::Paid, Some(paid_at)),
         };
         PaymentResponse {
             id: payment.id,
@@ -80,8 +82,8 @@ impl From<Payment> for PaymentResponse {
             details: payment.details.into(),
             status,
             paid_at,
-            created_at: payment.created_at.into(),
-            updated_at: payment.updated_at.into(),
+            created_at: payment.created_at,
+            updated_at: payment.updated_at,
             source: payment.source.into(),
         }
     }

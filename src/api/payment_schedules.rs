@@ -15,7 +15,6 @@ use crate::domain::payment::AccountNumber;
 use crate::domain::payment_schedule::{PaymentSchedule, Recurrence};
 
 use super::AppState;
-use super::serializers::rfc3339::OffsetDateTimeDto;
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -51,8 +50,10 @@ impl From<RecurrenceRequest> for Recurrence {
 struct PaymentScheduleResponse {
     id: Uuid,
     version: u32,
-    created_at: OffsetDateTimeDto,
-    updated_at: OffsetDateTimeDto,
+    #[serde(with = "time::serde::rfc3339")]
+    created_at: OffsetDateTime,
+    #[serde(with = "time::serde::rfc3339")]
+    updated_at: OffsetDateTime,
     total: MoneyDto,
     title_template: String,
     recurrence: RecurrenceResponse,
@@ -80,8 +81,8 @@ impl From<PaymentSchedule> for PaymentScheduleResponse {
         PaymentScheduleResponse {
             id: schedule.id,
             version: schedule.version.into(),
-            created_at: schedule.created_at.into(),
-            updated_at: schedule.updated_at.into(),
+            created_at: schedule.created_at,
+            updated_at: schedule.updated_at,
             total: schedule.total.into(),
             title_template: schedule.title_template,
             recurrence: schedule.recurrence.into(),
