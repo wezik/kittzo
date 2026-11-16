@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use sqlx::SqlitePool;
 
+use crate::app::transaction::{commit_tx, start_tx};
 use crate::infra::persistence::{self, sqlx_settings_repository as repo};
 use crate::infra::secrets::{Secrets, SecretsError};
 
@@ -86,6 +87,7 @@ pub struct SettingsService {
     secrets: Arc<dyn Secrets>,
     defaults: HashMap<&'static str, String>,
     overrides: HashMap<&'static str, String>,
+    updating: tokio::sync::Mutex<()>,
 }
 
 impl SettingsService {
@@ -100,21 +102,30 @@ impl SettingsService {
             secrets,
             defaults,
             overrides,
+            updating: tokio::sync::Mutex::new(()),
         }
     }
 
     pub async fn resolve(&self) -> Result<Settings, SettingsError> {
         let mut stored = repo::all(&self.pool).await?;
+        stored.extend(
+            self.blocking(|secrets| {
+                SECRETS
+                    .into_iter()
+                    .filter_map(|name| {
+                        let value = secrets.get(name).unwrap_or_else(|err| {
+                            tracing::error!(%err, name, "failed to read secret");
+                            None
+                        })?;
+                        Some((name.to_string(), value))
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .await,
+        );
         let mut values = HashMap::new();
         for name in NAMES {
-            let stored = if SECRETS.contains(&name) {
-                self.secrets.get(name).unwrap_or_else(|err| {
-                    tracing::error!(%err, name, "failed to read secret");
-                    None
-                })
-            } else {
-                stored.remove(name)
-            };
+            let stored = stored.remove(name);
             let value = self
                 .overrides
                 .get(name)
@@ -151,16 +162,75 @@ impl SettingsService {
         if let Some(name) = changes.keys().find(|name| !NAMES.contains(&name.as_str())) {
             return Err(SettingsError::Unknown(name.clone()));
         }
-        for (name, value) in changes {
-            let value = value.trim();
-            match (SECRETS.contains(&name.as_str()), value.is_empty()) {
-                (true, true) => self.secrets.delete(&name)?,
-                (true, false) => self.secrets.set(&name, value)?,
-                (false, true) => repo::delete(&self.pool, &name).await?,
-                (false, false) => repo::set(&self.pool, &name, value).await?,
+        let (secrets, plain): (Vec<_>, Vec<_>) = changes
+            .into_iter()
+            .partition(|(name, _)| SECRETS.contains(&name.as_str()));
+
+        let _serialized = self.updating.lock().await;
+        let mut tx = start_tx(&self.pool).await?;
+        for (name, value) in &plain {
+            match value.trim() {
+                "" => repo::delete(&mut tx, name).await?,
+                value => repo::set(&mut tx, name, value).await?,
             }
         }
-        Ok(())
+
+        let (previous, written) = self
+            .blocking(move |store| write_secrets(store, &secrets))
+            .await;
+        let result = match written {
+            Ok(()) => commit_tx(tx).await.map_err(SettingsError::from),
+            Err(err) => Err(err.into()),
+        };
+        if result.is_err() {
+            self.blocking(move |store| restore_secrets(store, previous))
+                .await;
+        }
+        result
+    }
+
+    async fn blocking<T: Send + 'static>(
+        &self,
+        op: impl FnOnce(&dyn Secrets) -> T + Send + 'static,
+    ) -> T {
+        let secrets = self.secrets.clone();
+        tokio::task::spawn_blocking(move || op(secrets.as_ref()))
+            .await
+            .expect("keyring task panicked")
+    }
+}
+
+type Previous = Vec<(String, Option<String>)>;
+
+fn write_secrets(
+    store: &dyn Secrets,
+    changes: &[(String, String)],
+) -> (Previous, Result<(), SecretsError>) {
+    let mut previous = Vec::new();
+    for (name, value) in changes {
+        let written = store.get(name).and_then(|old| {
+            previous.push((name.clone(), old));
+            write_secret(store, name, value.trim())
+        });
+        if written.is_err() {
+            return (previous, written);
+        }
+    }
+    (previous, Ok(()))
+}
+
+fn restore_secrets(store: &dyn Secrets, previous: Previous) {
+    for (name, old) in previous.into_iter().rev() {
+        if let Err(err) = write_secret(store, &name, old.as_deref().unwrap_or("")) {
+            tracing::error!(%err, name, "failed to restore secret");
+        }
+    }
+}
+
+fn write_secret(store: &dyn Secrets, name: &str, value: &str) -> Result<(), SecretsError> {
+    match value {
+        "" => store.delete(name),
+        value => store.set(name, value),
     }
 }
 
@@ -258,6 +328,48 @@ mod tests {
             }
         );
         assert_eq!(find("imap_user").value, Some("me".into()));
+    }
+
+    struct FailingSecrets(MemorySecrets, &'static str);
+
+    impl Secrets for FailingSecrets {
+        fn get(&self, name: &str) -> Result<Option<String>, SecretsError> {
+            self.0.get(name)
+        }
+
+        fn set(&self, name: &str, value: &str) -> Result<(), SecretsError> {
+            if name == self.1 {
+                return Err(SecretsError("locked".into()));
+            }
+            self.0.set(name, value)
+        }
+
+        fn delete(&self, name: &str) -> Result<(), SecretsError> {
+            self.0.delete(name)
+        }
+    }
+
+    #[tokio::test]
+    async fn a_failed_update_leaves_nothing_behind() {
+        let secrets = Arc::new(FailingSecrets(MemorySecrets::default(), "discord_token"));
+        secrets.0.set("openrouter_api_key", "old").unwrap();
+        let pool = connect("sqlite::memory:").await.unwrap();
+        let service = SettingsService::new(pool, secrets.clone(), HashMap::new(), HashMap::new());
+
+        let result = service
+            .update(HashMap::from([
+                ("imap_user".to_string(), "me".to_string()),
+                ("openrouter_api_key".to_string(), "new".to_string()),
+                ("discord_token".to_string(), "t".to_string()),
+            ]))
+            .await;
+
+        assert!(matches!(result, Err(SettingsError::Secrets(_))));
+        assert!(repo::all(&service.pool).await.unwrap().is_empty());
+        assert_eq!(
+            secrets.get("openrouter_api_key").unwrap(),
+            Some("old".into())
+        );
     }
 
     #[tokio::test]

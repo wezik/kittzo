@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use sqlx::{Row, SqlitePool};
+use sqlx::{Row, SqliteConnection, SqlitePool};
 
 pub use super::Error;
 use super::unexpected;
@@ -15,23 +15,23 @@ pub async fn all(pool: &SqlitePool) -> Result<HashMap<String, String>, Error> {
         .collect())
 }
 
-pub async fn set(pool: &SqlitePool, key: &str, value: &str) -> Result<(), Error> {
+pub async fn set(conn: &mut SqliteConnection, key: &str, value: &str) -> Result<(), Error> {
     sqlx::query(
         "INSERT INTO settings (key, value) VALUES (?, ?)
          ON CONFLICT(key) DO UPDATE SET value = excluded.value",
     )
     .bind(key)
     .bind(value)
-    .execute(pool)
+    .execute(conn)
     .await
     .map(|_| ())
     .map_err(unexpected)
 }
 
-pub async fn delete(pool: &SqlitePool, key: &str) -> Result<(), Error> {
+pub async fn delete(conn: &mut SqliteConnection, key: &str) -> Result<(), Error> {
     sqlx::query("DELETE FROM settings WHERE key = ?")
         .bind(key)
-        .execute(pool)
+        .execute(conn)
         .await
         .map(|_| ())
         .map_err(unexpected)

@@ -3,7 +3,7 @@ const TAX_FORMS = { "VAT-7": "VAT-7", PPL: "PPE" };
 function escapeHtml(text) {
   const div = document.createElement("div");
   div.textContent = text ?? "";
-  return div.innerHTML;
+  return div.innerHTML.replace(/"/g, "&quot;").replace(/'/g, "&#39;");
 }
 
 function formatDateTime(iso) {

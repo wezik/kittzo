@@ -4,7 +4,7 @@ const SERVICE: &str = "kittzo";
 
 #[derive(Debug, thiserror::Error)]
 #[error("keyring: {0}")]
-pub struct SecretsError(String);
+pub struct SecretsError(pub String);
 
 impl From<Error> for SecretsError {
     fn from(err: Error) -> Self {
