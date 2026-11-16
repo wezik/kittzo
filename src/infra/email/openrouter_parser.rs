@@ -265,7 +265,7 @@ fn payment_from_raw(
             .ok_or(payment::Error::InvalidAccountNumber)?;
         Details::standard(
             title,
-            AccountNumber::from(account_number)?,
+            AccountNumber::try_from(account_number)?,
             raw.recipient.unwrap_or_default(),
         )?
     };
@@ -316,7 +316,7 @@ mod tests {
             vec![
                 Details::standard(
                     "Faktura 49/09/2026".into(),
-                    AccountNumber::from(NRB.into()).unwrap(),
+                    AccountNumber::try_from(NRB.to_string()).unwrap(),
                     "Biuro".into()
                 )
                 .unwrap(),

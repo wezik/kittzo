@@ -84,7 +84,7 @@ pub(crate) fn details_from_columns(kind: &str, details: &str) -> Result<Details,
     };
     match kind {
         "standard" => {
-            let account_number = AccountNumber::from(field("account_number")?)
+            let account_number = AccountNumber::try_from(field("account_number")?)
                 .map_err(|err| corrupt(err.to_string()))?;
             Details::standard(field("title")?, account_number, field("recipient")?)
                 .map_err(|err| corrupt(err.to_string()))

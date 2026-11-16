@@ -209,7 +209,7 @@ mod tests {
             .create(
                 Money::from_parts("PLN", "1.00").unwrap(),
                 "foo".into(),
-                AccountNumber::from("61109010140000071219812874".into()).unwrap(),
+                AccountNumber::try_from("61109010140000071219812874".to_string()).unwrap(),
                 "".into(),
                 Recurrence::Monthly { day_of_month: 1 },
                 today(),

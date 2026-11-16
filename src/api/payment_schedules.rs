@@ -96,7 +96,7 @@ async fn create(
     State(state): State<AppState>,
     Json(body): Json<CreateScheduleRequest>,
 ) -> impl IntoResponse {
-    let account_number = match AccountNumber::from(body.account_number) {
+    let account_number = match AccountNumber::try_from(body.account_number) {
         Ok(number) => number,
         Err(err) => return (StatusCode::UNPROCESSABLE_ENTITY, err.to_string()).into_response(),
     };

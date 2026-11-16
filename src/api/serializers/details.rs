@@ -36,7 +36,7 @@ impl TryFrom<DetailsRepr> for DetailsDto {
                 title,
                 account_number,
                 recipient,
-            } => Details::standard(title, AccountNumber::from(account_number)?, recipient),
+            } => Details::standard(title, AccountNumber::try_from(account_number)?, recipient),
             DetailsRepr::Tax { form_symbol } => Ok(Details::tax(match form_symbol {
                 TaxFormRepr::Vat7 => TaxForm::Vat7,
                 TaxFormRepr::Ppl => TaxForm::Ppl,

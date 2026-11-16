@@ -106,7 +106,8 @@ pub fn some_schedule(title_template: &str, day_of_month: u8) -> PaymentSchedule 
     PaymentSchedule::new(
         some_money(),
         title_template.into(),
-        AccountNumber::from("61109010140000071219812874".into()).expect("valid account number"),
+        AccountNumber::try_from("61109010140000071219812874".to_string())
+            .expect("valid account number"),
         "Landlord".into(),
         Recurrence::Monthly { day_of_month },
         OffsetDateTime::now_utc().date(),
@@ -130,7 +131,7 @@ mod tests {
         PaymentSchedule::new(
             some_money(),
             "Foo {MM}/{YYYY}".to_string(),
-            AccountNumber::from("61109010140000071219812874".to_string()).unwrap(),
+            AccountNumber::try_from("61109010140000071219812874".to_string()).unwrap(),
             "someone".to_string(),
             Recurrence::Monthly { day_of_month },
             starts_at,
