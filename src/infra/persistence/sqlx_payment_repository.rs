@@ -244,8 +244,7 @@ fn row_to_payment(row: PaymentRow) -> Result<Payment, Error> {
         (other, ..) => return Err(corrupt(&format!("invalid source {other}"))),
     };
 
-    let details = details_from_columns(&row.r#type, &row.details)
-        .map_err(|err| corrupt(&format!("invalid details: {err}")))?;
+    let details = details_from_columns(&row.r#type, &row.details)?;
 
     let state = match (row.status.as_str(), row.paid_at) {
         ("unpaid", _) => State::Unpaid,

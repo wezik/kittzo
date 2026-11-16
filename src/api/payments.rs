@@ -142,14 +142,22 @@ pub(super) fn map_err_to_response(err: app::payment::Error) -> Response {
 #[derive(Deserialize)]
 struct ListQuery {
     paid: Option<bool>,
-    ack: Option<String>,
+    ack: Option<AckFilter>,
 }
 
-fn parse_ack(raw: &str) -> Result<ListQueryAckFilter, String> {
-    match raw {
-        "pending" => Ok(ListQueryAckFilter::Pending),
-        "accepted" => Ok(ListQueryAckFilter::Accepted),
-        other => Err(format!("unknown ack value: {other}")),
+#[derive(Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum AckFilter {
+    Pending,
+    Accepted,
+}
+
+impl From<AckFilter> for ListQueryAckFilter {
+    fn from(filter: AckFilter) -> Self {
+        match filter {
+            AckFilter::Pending => ListQueryAckFilter::Pending,
+            AckFilter::Accepted => ListQueryAckFilter::Accepted,
+        }
     }
 }
 
@@ -184,10 +192,7 @@ async fn get_list(
     State(state): State<AppState>,
     Query(query): Query<ListQuery>,
 ) -> impl IntoResponse {
-    let ack_filter = match query.ack.as_deref().map(parse_ack).transpose() {
-        Ok(ack_filter) => ack_filter,
-        Err(err) => return (StatusCode::BAD_REQUEST, err).into_response(),
-    };
+    let ack_filter = query.ack.map(ListQueryAckFilter::from);
     let paid_filter = query.paid.map(|paid| {
         if paid {
             ListQueryPaidFilter::Paid
