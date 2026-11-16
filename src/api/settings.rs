@@ -61,11 +61,10 @@ async fn update(
 
 fn error(err: &Error) -> axum::response::Response {
     match err {
-        Error::Unknown(_) => (StatusCode::UNPROCESSABLE_ENTITY, err.to_string()),
+        Error::Unknown(_) => (StatusCode::UNPROCESSABLE_ENTITY, err.to_string()).into_response(),
         _ => {
             tracing::error!(%err, "settings request failed");
-            (StatusCode::INTERNAL_SERVER_ERROR, err.to_string())
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
         }
     }
-    .into_response()
 }

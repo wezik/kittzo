@@ -47,7 +47,13 @@ async fn post_create_payment(
 ) -> impl IntoResponse {
     let source = match payment::Source::try_from(body.source) {
         Ok(source) => source,
-        Err(err) => return (StatusCode::BAD_REQUEST, err.to_string()).into_response(),
+        Err(err) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                format!("invalid occurrence_date: {err}"),
+            )
+                .into_response();
+        }
     };
     match state
         .payment_service
