@@ -15,7 +15,7 @@ use app::outbox::OutboxRelayJob;
 use app::payment;
 use app::payment_schedule::PaymentScheduleService;
 use app::payment_schedule_job::PaymentScheduleJob;
-use app::settings::{self, SettingsService};
+use app::settings::{self, Setting, SettingsService};
 use infra::Config;
 use infra::config::OpenRouterConfig;
 use infra::discord::{DiscordConsumer, DiscordReactionListener};
@@ -56,9 +56,9 @@ async fn serve(config: Config, pending_ack: Arc<AtomicBool>) {
         pool.clone(),
         Arc::new(Keyring),
         HashMap::from([
-            ("imap_host", config.email.imap_host.clone()),
-            ("imap_label", config.email.label.clone()),
-            ("openrouter_model", config.openrouter.model.clone()),
+            (Setting::ImapHost, config.email.imap_host.clone()),
+            (Setting::ImapLabel, config.email.label.clone()),
+            (Setting::OpenrouterModel, config.openrouter.model.clone()),
         ]),
         settings::env_overrides(),
     ));
@@ -76,7 +76,7 @@ async fn serve(config: Config, pending_ack: Arc<AtomicBool>) {
     tokio::spawn(PendingAckWatch::new(payment_service.clone(), pending_ack).run());
 
     let bus: Arc<dyn EventBus> = Arc::new(TokioEventBus::new());
-    let missing = settings.missing(&settings::DISCORD);
+    let missing = settings.missing(&Setting::DISCORD);
     if !missing.is_empty() {
         tracing::warn!(
             ?missing,
@@ -87,8 +87,11 @@ async fn serve(config: Config, pending_ack: Arc<AtomicBool>) {
         // subscribes before the relay job below can publish anything.
         tokio::spawn(
             DiscordConsumer::new(
-                settings.get("discord_token"),
-                HashMap::from([("confirmations".to_string(), settings.get("discord_channel"))]),
+                settings.get(Setting::DiscordToken),
+                HashMap::from([(
+                    "confirmations".to_string(),
+                    settings.get(Setting::DiscordChannel),
+                )]),
                 pool.clone(),
                 bus.clone(),
             )
@@ -97,7 +100,7 @@ async fn serve(config: Config, pending_ack: Arc<AtomicBool>) {
         tokio::spawn(OutboxRelayJob::new(pool.clone(), bus.clone(), config.outbox.clone()).run());
         tokio::spawn(
             DiscordReactionListener::new(
-                settings.get("discord_token"),
+                settings.get(Setting::DiscordToken),
                 pool.clone(),
                 payment_service.clone(),
             )
@@ -105,22 +108,22 @@ async fn serve(config: Config, pending_ack: Arc<AtomicBool>) {
         );
     }
 
-    let missing = settings.missing(&settings::EMAIL);
+    let missing = settings.missing(&Setting::EMAIL);
     if !missing.is_empty() {
         tracing::warn!(?missing, "email watcher disabled");
     } else {
         tracing::info!("email watcher enabled");
         let parser = Arc::new(OpenRouterParser::new(OpenRouterConfig {
-            api_key: settings.get("openrouter_api_key"),
-            model: settings.get("openrouter_model"),
+            api_key: settings.get(Setting::OpenrouterApiKey),
+            model: settings.get(Setting::OpenrouterModel),
             ..config.openrouter.clone()
         }));
         let email_service = Arc::new(email::Service::new(parser, payment_service.clone()));
         let mailbox = Arc::new(GmailMailbox::new(
-            settings.get("imap_host"),
-            settings.get("imap_user"),
-            settings.get("imap_app_password"),
-            settings.get("imap_label"),
+            settings.get(Setting::ImapHost),
+            settings.get(Setting::ImapUser),
+            settings.get(Setting::ImapAppPassword),
+            settings.get(Setting::ImapLabel),
         ));
         tokio::spawn(
             EmailWatchJob::new(
