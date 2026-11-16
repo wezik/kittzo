@@ -15,8 +15,8 @@ use app::payment;
 use app::payment_schedule;
 use app::payment_schedule_job::PaymentScheduleJob;
 use app::settings::{self, Setting};
-use infra::Config;
-use infra::config::OpenRouterConfig;
+
+use infra::config::{Config, OpenRouterConfig};
 use infra::discord::{DiscordConsumer, DiscordReactionListener};
 use infra::email::OpenRouterParser;
 use infra::imap::GmailMailbox;
@@ -25,9 +25,9 @@ use infra::tray::PendingAckWatch;
 use twilight_model::id::Id;
 
 fn main() {
-    infra::init();
+    infra::logging::init();
     tracing::info!("starting up");
-    infra::enter_home_dir();
+    infra::config::enter_home_dir();
 
     let config = Config::load();
     let server_port = config.server_port;
