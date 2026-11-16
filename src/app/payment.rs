@@ -48,7 +48,7 @@ impl Service {
         Self { pool }
     }
 
-    pub async fn list(&self, query: Option<ListQuery>) -> Result<Vec<Payment>, Error> {
+    pub async fn list(&self, query: ListQuery) -> Result<Vec<Payment>, Error> {
         Ok(sqlx_payment_repository::find_all(&self.pool, query).await?)
     }
 

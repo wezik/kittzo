@@ -136,7 +136,9 @@ mod tests {
     }
 
     async fn payments(pool: &SqlitePool) -> Vec<payment::Payment> {
-        sqlx_payment_repository::find_all(pool, None).await.unwrap()
+        sqlx_payment_repository::find_all(pool, Default::default())
+            .await
+            .unwrap()
     }
 
     #[tokio::test]

@@ -204,10 +204,10 @@ async fn get_list(
     });
     match state
         .payment_service
-        .list(Some(payment::ListQuery {
+        .list(payment::ListQuery {
             paid_filter,
             ack_filter,
-        }))
+        })
         .await
     {
         Ok(payments) => Json(

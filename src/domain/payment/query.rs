@@ -1,7 +1,6 @@
+#[derive(Default)]
 pub struct ListQuery {
-    /// None means all
     pub paid_filter: Option<ListQueryPaidFilter>,
-    /// None means all
     pub ack_filter: Option<ListQueryAckFilter>,
 }
 

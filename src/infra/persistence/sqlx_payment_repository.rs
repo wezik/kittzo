@@ -148,43 +148,30 @@ where
         .map_err(Error::from)
 }
 
-pub async fn find_all<'e, E>(executor: E, query: Option<ListQuery>) -> Result<Vec<Payment>, Error>
+pub async fn find_all<'e, E>(executor: E, query: ListQuery) -> Result<Vec<Payment>, Error>
 where
     E: sqlx::Executor<'e, Database = Sqlite>,
 {
-    let mut sql = String::from("SELECT * FROM payments");
-    if let Some(ListQuery {
-        paid_filter,
-        ack_filter,
-    }) = query
-    {
-        let filters: Vec<&str> = [
-            paid_filter.map(|filter| match filter {
-                ListQueryPaidFilter::Paid => "status = 'paid'",
-                ListQueryPaidFilter::Unpaid => "status = 'unpaid'",
-            }),
-            ack_filter.map(|filter| match filter {
-                ListQueryAckFilter::Pending => "ack = 'pending'",
-                ListQueryAckFilter::Accepted => "ack = 'accepted'",
-            }),
-        ]
-        .into_iter()
-        .flatten()
-        .collect();
-        if !filters.is_empty() {
-            sql.push_str(" WHERE ");
-            sql.push_str(&filters.join(" AND "));
-        }
-    }
-    sql.push_str(" ORDER BY created_at");
-
-    sqlx::query_as::<_, PaymentRow>(sqlx::AssertSqlSafe(sql))
-        .fetch_all(executor)
-        .await
-        .map_err(Error::from)?
-        .into_iter()
-        .map(row_to_payment)
-        .collect()
+    let status = query.paid_filter.map(|filter| match filter {
+        ListQueryPaidFilter::Paid => "paid",
+        ListQueryPaidFilter::Unpaid => "unpaid",
+    });
+    let ack = query.ack_filter.map(|filter| match filter {
+        ListQueryAckFilter::Pending => "pending",
+        ListQueryAckFilter::Accepted => "accepted",
+    });
+    sqlx::query_as::<_, PaymentRow>(
+        "SELECT * FROM payments
+         WHERE (?1 IS NULL OR status = ?1) AND (?2 IS NULL OR ack = ?2)
+         ORDER BY created_at",
+    )
+    .bind(status)
+    .bind(ack)
+    .fetch_all(executor)
+    .await?
+    .into_iter()
+    .map(row_to_payment)
+    .collect()
 }
 
 pub async fn find<'e, E>(executor: E, id: Uuid) -> Result<Payment, Error>
@@ -323,7 +310,7 @@ mod tests {
         create(&pool, &b).await.unwrap();
 
         // when
-        let all = find_all(&pool, None).await.unwrap();
+        let all = find_all(&pool, ListQuery::default()).await.unwrap();
 
         // then
         assert_eq!(all.len(), 2);
@@ -347,10 +334,10 @@ mod tests {
         // when
         let found = find_all(
             &pool,
-            Some(ListQuery {
+            ListQuery {
                 paid_filter: Some(ListQueryPaidFilter::Unpaid),
                 ack_filter: None,
-            }),
+            },
         )
         .await
         .unwrap();
@@ -375,10 +362,10 @@ mod tests {
         // when
         let found = find_all(
             &pool,
-            Some(ListQuery {
+            ListQuery {
                 paid_filter: Some(ListQueryPaidFilter::Unpaid),
                 ack_filter: Some(ListQueryAckFilter::Accepted),
-            }),
+            },
         )
         .await
         .unwrap();
