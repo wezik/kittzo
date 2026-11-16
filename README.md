@@ -38,7 +38,7 @@ mise run dev
 
 The UI is at http://127.0.0.1:7878. The tray's "Open UI" item opens it too.
 
-Integrations (Discord, email, OpenRouter) are set up in the UI's Settings tab. Secrets go to the OS keyring, everything else to the database. An integration with missing settings is skipped until they're filled in. On Linux the keyring needs a Secret Service provider, such as GNOME Keyring.
+Integrations (Discord, email, OpenRouter) are set up in the UI's Settings tab. Secrets go to the OS keyring, everything else to the database. Changes apply on restart. An integration with missing settings stays off, and the startup log says which settings are missing. On Linux the keyring needs a Secret Service provider, such as GNOME Keyring.
 
 `kittzo.toml` holds safe defaults only, such as poll intervals and the OpenRouter model.
 

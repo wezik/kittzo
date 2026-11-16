@@ -7,7 +7,7 @@ use axum::response::{IntoResponse, Json};
 use axum::routing::get;
 use serde::Serialize;
 
-use crate::app::settings::{Setting, SettingView};
+use crate::app::settings::{SettingView, SettingsError};
 
 use super::AppState;
 
@@ -27,9 +27,9 @@ struct SettingResponse {
 impl From<SettingView> for SettingResponse {
     fn from(view: SettingView) -> Self {
         SettingResponse {
-            key: view.key.name(),
+            key: view.name,
             value: view.value,
-            secret: view.key.is_secret(),
+            secret: view.secret,
             is_set: view.is_set,
             overridden: view.overridden,
         }
@@ -37,35 +37,35 @@ impl From<SettingView> for SettingResponse {
 }
 
 async fn list(State(state): State<AppState>) -> impl IntoResponse {
-    let settings: Vec<SettingResponse> = state
-        .settings
-        .view()
-        .into_iter()
-        .map(SettingResponse::from)
-        .collect();
-    Json(settings)
+    match state.settings.view().await {
+        Ok(views) => Json(
+            views
+                .into_iter()
+                .map(SettingResponse::from)
+                .collect::<Vec<_>>(),
+        )
+        .into_response(),
+        Err(err) => error(err),
+    }
 }
 
 async fn update(
     State(state): State<AppState>,
-    Json(body): Json<HashMap<String, String>>,
+    Json(changes): Json<HashMap<String, String>>,
 ) -> impl IntoResponse {
-    let mut changes = HashMap::new();
-    for (name, value) in body {
-        let Some(key) = Setting::from_name(&name) else {
-            return (
-                StatusCode::UNPROCESSABLE_ENTITY,
-                format!("unknown setting {name}"),
-            )
-                .into_response();
-        };
-        changes.insert(key, value);
-    }
     match state.settings.update(changes).await {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
-        Err(err) => {
-            tracing::error!(%err, "failed to save settings");
-            (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response()
+        Err(err) => error(err),
+    }
+}
+
+fn error(err: SettingsError) -> axum::response::Response {
+    match err {
+        SettingsError::Unknown(_) => (StatusCode::UNPROCESSABLE_ENTITY, err.to_string()),
+        _ => {
+            tracing::error!(%err, "settings request failed");
+            (StatusCode::INTERNAL_SERVER_ERROR, err.to_string())
         }
     }
+    .into_response()
 }

@@ -3,21 +3,26 @@ mod app;
 mod domain;
 mod infra;
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
 use api::AppState;
+use app::email;
 use app::email_watch_job::EmailWatchJob;
 use app::event_bus::EventBus;
 use app::outbox::OutboxRelayJob;
 use app::payment;
 use app::payment_schedule::PaymentScheduleService;
 use app::payment_schedule_job::PaymentScheduleJob;
-use app::settings::{Setting, SettingsService};
+use app::settings::{self, SettingsService};
 use app::startup_task::StartupTask;
 use infra::Config;
+use infra::config::OpenRouterConfig;
 use infra::discord::{DiscordConsumer, DiscordReactionListener};
+use infra::email::OpenRouterParser;
 use infra::event_bus::TokioEventBus;
+use infra::imap::GmailMailbox;
 use infra::secrets::Keyring;
 use infra::tray::PendingAckWatch;
 
@@ -49,50 +54,84 @@ async fn serve(config: Config, pending_ack: Arc<AtomicBool>) {
         .await
         .expect("failed to connect to database"); // intentional panic, db is a necessary dependency
 
-    let settings = Arc::new(
-        SettingsService::load(
-            pool.clone(),
-            Arc::new(Keyring),
-            config.setting_defaults(),
-            Setting::env_overrides(),
-        )
+    let settings_service = Arc::new(SettingsService::new(
+        pool.clone(),
+        Arc::new(Keyring),
+        HashMap::from([
+            ("imap_host", config.email.imap_host.clone()),
+            ("imap_label", config.email.label.clone()),
+            ("openrouter_model", config.openrouter.model.clone()),
+        ]),
+        settings::env_overrides(),
+    ));
+    let settings = settings_service
+        .resolve()
         .await
-        .expect("failed to load settings"),
-    );
+        .expect("failed to load settings");
+
     let payment_service = Arc::new(payment::Service::new(pool.clone()));
     let schedule_service = Arc::new(PaymentScheduleService::new(pool.clone()));
-    let bus: Arc<dyn EventBus> = Arc::new(TokioEventBus::new());
 
-    // the discord consumer subscribes to the bus before the relay job can publish anything.
-    let tasks: Vec<Arc<dyn StartupTask>> = vec![
+    let mut tasks: Vec<Arc<dyn StartupTask>> = vec![
         Arc::new(PaymentScheduleJob::new(
             schedule_service.clone(),
             config.payment_schedule(),
         )),
         Arc::new(PendingAckWatch::new(payment_service.clone(), pending_ack)),
-        Arc::new(DiscordConsumer::new(
-            settings.clone(),
+    ];
+
+    let bus: Arc<dyn EventBus> = Arc::new(TokioEventBus::new());
+    let missing = settings.missing(&settings::DISCORD);
+    if !missing.is_empty() {
+        tracing::warn!(
+            ?missing,
+            "discord disabled, payment events will stay in the outbox"
+        );
+    } else {
+        tracing::info!("discord enabled");
+        // subscribes before the relay job below can publish anything.
+        tasks.push(Arc::new(DiscordConsumer::new(
+            settings.get("discord_token"),
+            HashMap::from([("confirmations".to_string(), settings.get("discord_channel"))]),
             pool.clone(),
             bus.clone(),
-        )),
-        Arc::new(OutboxRelayJob::new(
+        )));
+        tasks.push(Arc::new(OutboxRelayJob::new(
             pool.clone(),
             bus.clone(),
             config.outbox(),
-        )),
-        Arc::new(DiscordReactionListener::new(
-            settings.clone(),
+        )));
+        tasks.push(Arc::new(DiscordReactionListener::new(
+            settings.get("discord_token"),
             pool.clone(),
             payment_service.clone(),
-        )),
-        Arc::new(EmailWatchJob::new(
-            settings.clone(),
-            payment_service.clone(),
-            config.openrouter.clone(),
+        )));
+    }
+
+    let missing = settings.missing(&settings::EMAIL);
+    if !missing.is_empty() {
+        tracing::warn!(?missing, "email watcher disabled");
+    } else {
+        tracing::info!("email watcher enabled");
+        let parser = Arc::new(OpenRouterParser::new(OpenRouterConfig {
+            api_key: settings.get("openrouter_api_key"),
+            model: settings.get("openrouter_model"),
+            ..config.openrouter.clone()
+        }));
+        let email_service = Arc::new(email::Service::new(parser, payment_service.clone()));
+        let mailbox = Arc::new(GmailMailbox::new(
+            settings.get("imap_host"),
+            settings.get("imap_user"),
+            settings.get("imap_app_password"),
+            settings.get("imap_label"),
+        ));
+        tasks.push(Arc::new(EmailWatchJob::new(
+            mailbox,
+            email_service,
             pool.clone(),
             config.email.watch(),
-        )),
-    ];
+        )));
+    }
 
     for task in tasks {
         tokio::spawn(async move {
@@ -104,7 +143,7 @@ async fn serve(config: Config, pending_ack: Arc<AtomicBool>) {
     let state = AppState {
         payment_service,
         schedule_service,
-        settings,
+        settings: settings_service,
     };
 
     let addr = format!("127.0.0.1:{}", config.server_port);

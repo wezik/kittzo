@@ -4,15 +4,11 @@ use std::time::Duration;
 use async_trait::async_trait;
 use sqlx::SqlitePool;
 
-use crate::app::email::Service;
-use crate::app::payment;
-use crate::app::settings::SettingsService;
 use crate::app::startup_task::StartupTask;
-use crate::domain::email::Mailbox;
-use crate::infra::config::OpenRouterConfig;
-use crate::infra::email::OpenRouterParser;
-use crate::infra::imap::GmailMailbox;
 use crate::infra::persistence::sqlx_processed_email_repository as processed;
+
+use crate::app::email::Service;
+use crate::domain::email::Mailbox;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct EmailWatchConfig {
@@ -30,51 +26,28 @@ impl Default for EmailWatchConfig {
 }
 
 pub struct EmailWatchJob {
-    settings: Arc<SettingsService>,
-    payments: Arc<payment::Service>,
-    openrouter: OpenRouterConfig,
+    mailbox: Arc<dyn Mailbox>,
+    service: Arc<Service>,
     pool: SqlitePool,
     config: EmailWatchConfig,
 }
 
 impl EmailWatchJob {
     pub fn new(
-        settings: Arc<SettingsService>,
-        payments: Arc<payment::Service>,
-        openrouter: OpenRouterConfig,
+        mailbox: Arc<dyn Mailbox>,
+        service: Arc<Service>,
         pool: SqlitePool,
         config: EmailWatchConfig,
     ) -> Self {
         Self {
-            settings,
-            payments,
-            openrouter,
+            mailbox,
+            service,
             pool,
             config,
         }
     }
 
-    async fn tick(&self) {
-        let Some(email) = self.settings.current().email() else {
-            tracing::debug!("email not configured, skipping");
-            return;
-        };
-        let mailbox = GmailMailbox::new(
-            email.imap_host,
-            email.imap_user,
-            email.app_password,
-            email.label,
-        );
-        let parser = Arc::new(OpenRouterParser::new(OpenRouterConfig {
-            api_key: email.openrouter_api_key,
-            model: email.openrouter_model,
-            ..self.openrouter.clone()
-        }));
-        let service = Service::new(parser, self.payments.clone());
-        self.process(&mailbox, &service).await;
-    }
-
-    async fn process(&self, mailbox: &dyn Mailbox, service: &Service) {
+    async fn process(&self) {
         let known = match processed::finished(&self.pool).await {
             Ok(known) => known,
             Err(err) => {
@@ -82,7 +55,7 @@ impl EmailWatchJob {
                 return;
             }
         };
-        let emails = match mailbox.fetch_new(&known).await {
+        let emails = match self.mailbox.fetch_new(&known).await {
             Ok(emails) => emails,
             Err(err) => {
                 tracing::error!(%err, "failed to fetch emails");
@@ -95,7 +68,7 @@ impl EmailWatchJob {
         }
 
         for email in emails {
-            let recorded = match service.process(&email).await {
+            let recorded = match self.service.process(&email).await {
                 Ok(created) => {
                     processed::mark_processed(&self.pool, &email.external_id, created).await
                 }
@@ -145,7 +118,7 @@ impl StartupTask for EmailWatchJob {
 
     async fn run(&self) {
         loop {
-            self.tick().await;
+            self.process().await;
             tokio::time::sleep(Duration::from_secs(self.config.poll_interval_secs)).await;
         }
     }
@@ -158,7 +131,7 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use super::*;
-    use crate::app::settings::some_settings;
+    use crate::app::payment;
     use crate::domain::email::{self, Email, MailboxError, Parser, ParsingResult};
     use crate::domain::money::some_money;
     use crate::domain::payment::{Payment, Source, some_standard_details};
@@ -215,49 +188,32 @@ mod tests {
         }
     }
 
-    struct Harness {
-        job: EmailWatchJob,
-        mailbox: FakeMailbox,
-        service: Service,
-    }
-
-    impl Harness {
-        async fn process(&self) {
-            self.job.process(&self.mailbox, &self.service).await;
-        }
-    }
-
     async fn job(
         emails: Vec<Email>,
         fail: bool,
-    ) -> (Harness, Arc<FakeParser>, Arc<payment::Service>) {
+    ) -> (EmailWatchJob, Arc<FakeParser>, Arc<payment::Service>) {
         let pool = connect("sqlite::memory:").await.unwrap();
         let payments = Arc::new(payment::Service::new(pool.clone()));
         let parser = Arc::new(FakeParser {
             calls: AtomicUsize::new(0),
             fail: Mutex::new(fail),
         });
+        let service = Arc::new(Service::new(parser.clone(), payments.clone()));
         let job = EmailWatchJob::new(
-            some_settings(pool.clone(), &[]).await,
-            payments.clone(),
-            OpenRouterConfig::default(),
+            Arc::new(FakeMailbox(emails)),
+            service,
             pool,
             EmailWatchConfig::default(),
         );
-        let harness = Harness {
-            job,
-            mailbox: FakeMailbox(emails),
-            service: Service::new(parser.clone(), payments.clone()),
-        };
-        (harness, parser, payments)
+        (job, parser, payments)
     }
 
     #[tokio::test]
     async fn each_email_is_processed_once() {
-        let (harness, parser, payments) = job(vec![email("<a@x>"), email("<b@x>")], false).await;
+        let (job, parser, payments) = job(vec![email("<a@x>"), email("<b@x>")], false).await;
 
-        harness.process().await;
-        harness.process().await;
+        job.process().await;
+        job.process().await;
 
         assert_eq!(parser.calls.load(Ordering::SeqCst), 2);
         assert_eq!(payments.list(None).await.unwrap().len(), 2);
@@ -265,10 +221,10 @@ mod tests {
 
     #[tokio::test]
     async fn a_failing_email_is_retried_up_to_the_limit_then_left_alone() {
-        let (harness, parser, payments) = job(vec![email("<a@x>")], true).await;
+        let (job, parser, payments) = job(vec![email("<a@x>")], true).await;
 
         for _ in 0..5 {
-            harness.process().await;
+            job.process().await;
         }
 
         assert_eq!(parser.calls.load(Ordering::SeqCst), 3);
@@ -277,12 +233,12 @@ mod tests {
 
     #[tokio::test]
     async fn an_email_that_recovers_before_the_limit_creates_its_payment() {
-        let (harness, parser, payments) = job(vec![email("<a@x>")], true).await;
-        harness.process().await;
+        let (job, parser, payments) = job(vec![email("<a@x>")], true).await;
+        job.process().await;
 
         *parser.fail.lock().unwrap() = false;
-        harness.process().await;
-        harness.process().await;
+        job.process().await;
+        job.process().await;
 
         assert_eq!(parser.calls.load(Ordering::SeqCst), 2);
         assert_eq!(payments.list(None).await.unwrap().len(), 1);

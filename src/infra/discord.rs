@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -18,13 +19,13 @@ use uuid::Uuid;
 use crate::app::event_bus::EventBus;
 use crate::app::payment;
 use crate::app::run::retrying;
-use crate::app::settings::{DiscordSettings, Settings, SettingsService};
 use crate::app::startup_task::StartupTask;
 use crate::domain::event::{Codec, OutboxMessage};
 use crate::domain::payment::{Ack, Event, Payment, Source};
 use crate::infra::codec::JsonCodec;
 use crate::infra::persistence::{self, sqlx_payment_repository as payment_repo};
 
+const CONFIRMATIONS_CHANNEL: &str = "confirmations";
 const APPROVE_EMOJI: &str = "✅";
 const REJECT_EMOJI: &str = "❎";
 const DELIVERY_ATTEMPTS: usize = 3;
@@ -39,7 +40,8 @@ enum Failure {
 }
 
 pub struct DiscordConsumer {
-    settings: Arc<SettingsService>,
+    client: Client,
+    channels: HashMap<String, String>,
     pool: SqlitePool,
     bus: Arc<dyn EventBus>,
     receiver: Mutex<broadcast::Receiver<OutboxMessage>>,
@@ -47,10 +49,16 @@ pub struct DiscordConsumer {
 }
 
 impl DiscordConsumer {
-    pub fn new(settings: Arc<SettingsService>, pool: SqlitePool, bus: Arc<dyn EventBus>) -> Self {
+    pub fn new(
+        token: String,
+        channels: HashMap<String, String>,
+        pool: SqlitePool,
+        bus: Arc<dyn EventBus>,
+    ) -> Self {
         let receiver = bus.subscribe();
         Self {
-            settings,
+            client: Client::new(token),
+            channels,
             pool,
             bus,
             receiver: Mutex::new(receiver),
@@ -58,15 +66,12 @@ impl DiscordConsumer {
         }
     }
 
-    fn channel_id(raw: &str) -> Option<Id<ChannelMarker>> {
+    fn channel_id(&self, key: &str) -> Option<Id<ChannelMarker>> {
+        let raw = self.channels.get(key)?;
         raw.parse::<u64>()
+            .inspect_err(|_| tracing::warn!(channel_key = key, raw, "invalid discord channel id"))
             .ok()
-            .filter(|id| *id != 0)
             .map(Id::new)
-            .or_else(|| {
-                tracing::warn!(raw, "invalid discord channel id");
-                None
-            })
     }
 
     fn prompt(payment: &Payment) -> String {
@@ -132,10 +137,6 @@ impl DiscordConsumer {
         ) {
             return Ok(());
         }
-        let Some(discord) = self.settings.current().discord() else {
-            tracing::debug!("discord not configured, skipping delivery");
-            return Ok(());
-        };
         // a poison payload requeued forever is a payload retried forever - give up on it once,
         // loudly, instead of wedging the queue.
         let event: Event = JsonCodec::decode(&message.payload).map_err(|err| {
@@ -144,17 +145,13 @@ impl DiscordConsumer {
         })?;
 
         match event {
-            Event::Created { id } => self.post_prompt(&discord, id).await,
-            Event::Acked { id } => self.withdraw(&discord, id).await,
+            Event::Created { id } => self.post_prompt(id).await,
+            Event::Acked { id } => self.withdraw(id).await,
             Event::Finished { .. } => Ok(()),
         }
     }
 
-    async fn post_prompt(
-        &self,
-        discord: &DiscordSettings,
-        payment_id: Uuid,
-    ) -> Result<(), Failure> {
+    async fn post_prompt(&self, payment_id: Uuid) -> Result<(), Failure> {
         let payment = match payment_repo::find(&self.pool, payment_id).await {
             Ok(payment) => payment,
             Err(persistence::Error::NotFound) => return Ok(()),
@@ -179,13 +176,18 @@ impl DiscordConsumer {
             }
         }
 
-        let Some(channel_id) = Self::channel_id(&discord.channel) else {
+        let Some(channel_id) = self.channel_id(CONFIRMATIONS_CHANNEL) else {
+            tracing::warn!("no discord channel configured, will retry");
             return Err(Failure::Retry);
         };
 
-        let client = Client::new(discord.token.clone());
         let content = Self::prompt(&payment);
-        let message = match client.create_message(channel_id).content(&content).await {
+        let message = match self
+            .client
+            .create_message(channel_id)
+            .content(&content)
+            .await
+        {
             Ok(response) => match response.model().await {
                 Ok(message) => message,
                 Err(err) => {
@@ -217,7 +219,8 @@ impl DiscordConsumer {
 
         for emoji in [APPROVE_EMOJI, REJECT_EMOJI] {
             let reaction = RequestReactionType::Unicode { name: emoji };
-            if let Err(err) = client
+            if let Err(err) = self
+                .client
                 .create_reaction(channel_id, message.id, &reaction)
                 .await
             {
@@ -230,7 +233,7 @@ impl DiscordConsumer {
         Ok(())
     }
 
-    async fn withdraw(&self, discord: &DiscordSettings, payment_id: Uuid) -> Result<(), Failure> {
+    async fn withdraw(&self, payment_id: Uuid) -> Result<(), Failure> {
         let reference = match self.find_message(payment_id).await {
             Ok(reference) => reference,
             Err(err) => {
@@ -244,8 +247,7 @@ impl DiscordConsumer {
             return Ok(());
         };
 
-        let client = Client::new(discord.token.clone());
-        if let Err(err) = client.delete_message(channel_id, message_id).await {
+        if let Err(err) = self.client.delete_message(channel_id, message_id).await {
             let already_gone = matches!(
                 err.kind(),
                 ErrorType::Response { status, .. } if status.get() == 404
@@ -332,23 +334,15 @@ fn decision_from_emoji(emoji: &EmojiReactionType) -> Option<bool> {
 /// Pushes reactions in as they happen; a reconcile job would be the slow catch-up for
 /// anything missed while disconnected - deliberately out of scope for now.
 pub struct DiscordReactionListener {
-    settings: Arc<SettingsService>,
+    token: String,
     pool: SqlitePool,
     payments: Arc<payment::Service>,
 }
 
-fn token(settings: &Settings) -> Option<String> {
-    settings.discord().map(|discord| discord.token)
-}
-
 impl DiscordReactionListener {
-    pub fn new(
-        settings: Arc<SettingsService>,
-        pool: SqlitePool,
-        payments: Arc<payment::Service>,
-    ) -> Self {
+    pub fn new(token: String, pool: SqlitePool, payments: Arc<payment::Service>) -> Self {
         Self {
-            settings,
+            token,
             pool,
             payments,
         }
@@ -377,33 +371,9 @@ impl StartupTask for DiscordReactionListener {
     }
 
     async fn run(&self) {
-        let mut changes = self.settings.subscribe();
-        loop {
-            let current = token(&changes.borrow_and_update());
-            let listen = async {
-                if let Some(token) = &current {
-                    self.listen(token).await;
-                }
-                std::future::pending::<()>().await
-            };
-            tokio::select! {
-                _ = listen => {}
-                changed = changes.wait_for(|settings| token(settings) != current) => {
-                    if changed.is_err() {
-                        return;
-                    }
-                    tracing::info!("discord settings changed, reconnecting");
-                }
-            }
-        }
-    }
-}
-
-impl DiscordReactionListener {
-    async fn listen(&self, token: &str) {
         // the bot reacts to its own prompt to give the human something to click, so without
         // knowing its own id every prompt would instantly self-approve.
-        let own_id = match Client::new(token.to_string()).current_user().await {
+        let own_id = match Client::new(self.token.clone()).current_user().await {
             Ok(response) => match response.model().await {
                 Ok(user) => user.id,
                 Err(err) => {
@@ -419,7 +389,7 @@ impl DiscordReactionListener {
 
         let mut shard = Shard::new(
             ShardId::ONE,
-            token.to_string(),
+            self.token.clone(),
             Intents::GUILD_MESSAGE_REACTIONS | Intents::DIRECT_MESSAGE_REACTIONS,
         );
 
@@ -456,7 +426,6 @@ impl DiscordReactionListener {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::settings::{Setting, some_settings};
     use crate::domain::money::Money;
     use crate::domain::money::some_money;
     use crate::domain::payment::some_standard_details;
@@ -466,7 +435,7 @@ mod tests {
 
     async fn consumer() -> DiscordConsumer {
         let pool = connect("sqlite::memory:").await.unwrap();
-        consumer_with(pool, Arc::new(TokioEventBus::new())).await
+        consumer_with(pool, Arc::new(TokioEventBus::new()))
     }
 
     fn email_source() -> Source {
@@ -563,7 +532,7 @@ mod tests {
             .await
             .unwrap();
 
-        // an unparsable channel, so reaching the send would be `Retry`.
+        // no `[discord.channels]` configured, so reaching the send would be `Retry`.
         let msg = OutboxMessage::from(Event::Created { id: payment.id });
 
         assert_eq!(consumer.handle(&msg).await, Ok(()));
@@ -627,18 +596,11 @@ mod tests {
         assert_eq!(decision_from_emoji(&reject), Some(false));
     }
 
-    async fn consumer_with(pool: sqlx::SqlitePool, bus: Arc<dyn EventBus>) -> DiscordConsumer {
+    fn consumer_with(pool: sqlx::SqlitePool, bus: Arc<dyn EventBus>) -> DiscordConsumer {
         let receiver = bus.subscribe();
-        let settings = some_settings(
-            pool.clone(),
-            &[
-                (Setting::DiscordToken, "token"),
-                (Setting::DiscordChannel, "not-a-number"),
-            ],
-        )
-        .await;
         DiscordConsumer {
-            settings,
+            client: Client::new(String::new()),
+            channels: HashMap::new(),
             pool,
             bus,
             receiver: Mutex::new(receiver),
@@ -652,7 +614,7 @@ mod tests {
         let msg = OutboxMessage::from(Event::Acked { id: Uuid::new_v4() });
         let bus = Arc::new(TokioEventBus::new());
         let mut spy = bus.subscribe();
-        let consumer = consumer_with(pool, bus).await;
+        let consumer = consumer_with(pool, bus);
 
         consumer.process(msg).await;
 
@@ -665,11 +627,12 @@ mod tests {
         let pool = connect("sqlite::memory:").await.unwrap();
         let payment = stored(&pool, email_source()).await;
         assert_eq!(payment.ack, Ack::Pending);
-        // an unparsable channel makes `post_prompt` return `Retry` without touching the network.
+        // no `[discord.channels]` entry configured, so `post_prompt` returns `Retry` without
+        // ever touching the network.
         let msg = OutboxMessage::from(Event::Created { id: payment.id });
         let bus = Arc::new(TokioEventBus::new());
         let mut spy = bus.subscribe();
-        let consumer = consumer_with(pool, bus).await;
+        let consumer = consumer_with(pool, bus);
 
         consumer.process(msg.clone()).await;
 
@@ -681,23 +644,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn unconfigured_discord_skips_delivery() {
-        let pool = connect("sqlite::memory:").await.unwrap();
-        let payment = stored(&pool, email_source()).await;
-        let mut consumer = consumer_with(pool.clone(), Arc::new(TokioEventBus::new())).await;
-        consumer.settings = some_settings(pool, &[]).await;
-
-        let msg = OutboxMessage::from(Event::Created { id: payment.id });
-
-        assert_eq!(consumer.handle(&msg).await, Ok(()));
-    }
-
-    #[tokio::test]
     async fn process_does_not_republish_an_undecodable_payload() {
         let pool = connect("sqlite::memory:").await.unwrap();
         let bus = Arc::new(TokioEventBus::new());
         let mut spy = bus.subscribe();
-        let consumer = consumer_with(pool, bus).await;
+        let consumer = consumer_with(pool, bus);
 
         consumer.process(garbage()).await;
 
@@ -708,7 +659,7 @@ mod tests {
     #[tokio::test]
     async fn listener_resolves_a_message_back_to_its_payment() {
         let pool = connect("sqlite::memory:").await.unwrap();
-        let consumer = consumer_with(pool.clone(), Arc::new(TokioEventBus::new())).await;
+        let consumer = consumer_with(pool.clone(), Arc::new(TokioEventBus::new()));
         let payment_id = Uuid::new_v4();
         let message_id = Id::<MessageMarker>::new(222);
         consumer
@@ -717,7 +668,7 @@ mod tests {
             .unwrap();
 
         let listener = DiscordReactionListener::new(
-            consumer.settings.clone(),
+            String::new(),
             pool.clone(),
             Arc::new(payment::Service::new(pool)),
         );

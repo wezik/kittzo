@@ -1,8 +1,5 @@
 use serde::Deserialize;
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-
-use crate::app::settings::Setting;
 
 use crate::app::email_watch_job::EmailWatchConfig;
 use crate::app::outbox::OutboxRelayConfig;
@@ -79,7 +76,6 @@ impl EmailConfig {
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct OpenRouterConfig {
-    #[serde(skip)]
     pub api_key: String,
     pub url: String,
     pub model: String,
@@ -124,14 +120,6 @@ impl Config {
 
     pub fn outbox(&self) -> OutboxRelayConfig {
         self.outbox.clone().into()
-    }
-
-    pub fn setting_defaults(&self) -> HashMap<Setting, String> {
-        HashMap::from([
-            (Setting::ImapHost, self.email.imap_host.clone()),
-            (Setting::ImapLabel, self.email.label.clone()),
-            (Setting::OpenRouterModel, self.openrouter.model.clone()),
-        ])
     }
 
     fn load_from(path: &Path) -> Config {
@@ -235,7 +223,7 @@ mod tests {
             model = "other/model"
             "#,
         );
-        assert_eq!(cfg.openrouter.api_key, "");
+        assert_eq!(cfg.openrouter.api_key, "sk-test");
         assert_eq!(cfg.openrouter.model, "other/model");
         assert_eq!(
             cfg.openrouter.url,
@@ -269,17 +257,6 @@ mod tests {
     fn payment_schedule_section_falls_back_to_defaults_when_absent() {
         let cfg = Config::parse("server_port = 1234\n");
         assert_eq!(cfg.payment_schedule().poll_interval_secs, 3600);
-    }
-
-    #[test]
-    fn setting_defaults_come_from_toml() {
-        let cfg = Config::parse(
-            "[email]
-label = \"bills\"
-",
-        );
-        assert_eq!(cfg.setting_defaults()[&Setting::ImapLabel], "bills");
-        assert_eq!(cfg.setting_defaults()[&Setting::ImapHost], "imap.gmail.com");
     }
 
     #[test]

@@ -2,140 +2,72 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use sqlx::SqlitePool;
-use tokio::sync::watch;
 
 use crate::infra::persistence::{self, sqlx_settings_repository as repo};
 use crate::infra::secrets::{Secrets, SecretsError};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum Setting {
-    DiscordToken,
-    DiscordChannel,
-    ImapHost,
-    ImapUser,
-    ImapAppPassword,
-    ImapLabel,
-    OpenRouterApiKey,
-    OpenRouterModel,
+const SECRETS: [&str; 3] = ["discord_token", "imap_app_password", "openrouter_api_key"];
+const NAMES: [&str; 8] = [
+    "discord_token",
+    "discord_channel",
+    "imap_host",
+    "imap_user",
+    "imap_app_password",
+    "imap_label",
+    "openrouter_api_key",
+    "openrouter_model",
+];
+
+pub const DISCORD: [&str; 2] = ["discord_token", "discord_channel"];
+pub const EMAIL: [&str; 6] = [
+    "imap_host",
+    "imap_user",
+    "imap_app_password",
+    "imap_label",
+    "openrouter_api_key",
+    "openrouter_model",
+];
+
+pub fn env_overrides() -> HashMap<&'static str, String> {
+    NAMES
+        .into_iter()
+        .filter_map(|name| {
+            let value = std::env::var(format!("KITTZO_{}", name.to_uppercase())).ok()?;
+            (!value.is_empty()).then_some((name, value))
+        })
+        .collect()
 }
 
-impl Setting {
-    pub const ALL: [Setting; 8] = [
-        Setting::DiscordToken,
-        Setting::DiscordChannel,
-        Setting::ImapHost,
-        Setting::ImapUser,
-        Setting::ImapAppPassword,
-        Setting::ImapLabel,
-        Setting::OpenRouterApiKey,
-        Setting::OpenRouterModel,
-    ];
-
-    pub fn name(self) -> &'static str {
-        match self {
-            Setting::DiscordToken => "discord_token",
-            Setting::DiscordChannel => "discord_channel",
-            Setting::ImapHost => "imap_host",
-            Setting::ImapUser => "imap_user",
-            Setting::ImapAppPassword => "imap_app_password",
-            Setting::ImapLabel => "imap_label",
-            Setting::OpenRouterApiKey => "openrouter_api_key",
-            Setting::OpenRouterModel => "openrouter_model",
-        }
-    }
-
-    pub fn from_name(name: &str) -> Option<Setting> {
-        Setting::ALL.into_iter().find(|key| key.name() == name)
-    }
-
-    pub fn is_secret(self) -> bool {
-        matches!(
-            self,
-            Setting::DiscordToken | Setting::ImapAppPassword | Setting::OpenRouterApiKey
-        )
-    }
-
-    fn env_var(self) -> String {
-        format!("KITTZO_{}", self.name().to_uppercase())
-    }
-
-    pub fn env_overrides() -> HashMap<Setting, String> {
-        Setting::ALL
-            .into_iter()
-            .filter_map(|key| {
-                let value = std::env::var(key.env_var()).ok()?;
-                (!value.is_empty()).then_some((key, value))
-            })
-            .collect()
-    }
-}
-
-#[derive(Debug, Clone, Default, PartialEq)]
-pub struct Settings(HashMap<Setting, String>);
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct DiscordSettings {
-    pub token: String,
-    pub channel: String,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct EmailSettings {
-    pub imap_host: String,
-    pub imap_user: String,
-    pub app_password: String,
-    pub label: String,
-    pub openrouter_api_key: String,
-    pub openrouter_model: String,
-}
+pub struct Settings(HashMap<&'static str, String>);
 
 impl Settings {
-    pub fn get(&self, key: Setting) -> &str {
-        self.0.get(&key).map_or("", String::as_str)
+    pub fn get(&self, name: &str) -> String {
+        self.0.get(name).cloned().unwrap_or_default()
     }
 
-    fn configured(&self, keys: &[Setting]) -> bool {
-        keys.iter().all(|key| self.0.contains_key(key))
-    }
-
-    pub fn discord(&self) -> Option<DiscordSettings> {
-        self.configured(&[Setting::DiscordToken, Setting::DiscordChannel])
-            .then(|| DiscordSettings {
-                token: self.get(Setting::DiscordToken).to_string(),
-                channel: self.get(Setting::DiscordChannel).to_string(),
-            })
-    }
-
-    pub fn email(&self) -> Option<EmailSettings> {
-        self.configured(&[
-            Setting::ImapHost,
-            Setting::ImapUser,
-            Setting::ImapAppPassword,
-            Setting::ImapLabel,
-            Setting::OpenRouterApiKey,
-            Setting::OpenRouterModel,
-        ])
-        .then(|| EmailSettings {
-            imap_host: self.get(Setting::ImapHost).to_string(),
-            imap_user: self.get(Setting::ImapUser).to_string(),
-            app_password: self.get(Setting::ImapAppPassword).to_string(),
-            label: self.get(Setting::ImapLabel).to_string(),
-            openrouter_api_key: self.get(Setting::OpenRouterApiKey).to_string(),
-            openrouter_model: self.get(Setting::OpenRouterModel).to_string(),
-        })
+    pub fn missing(&self, names: &[&'static str]) -> Vec<&'static str> {
+        names
+            .iter()
+            .copied()
+            .filter(|name| !self.0.contains_key(name))
+            .collect()
     }
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct SettingView {
-    pub key: Setting,
+    pub name: &'static str,
     pub value: Option<String>,
+    pub secret: bool,
     pub is_set: bool,
     pub overridden: bool,
 }
 
 #[derive(Debug, thiserror::Error)]
 pub enum SettingsError {
+    #[error("unknown setting {0}")]
+    Unknown(String),
+
     #[error("unexpected persistence error")]
     Persistence,
 
@@ -152,117 +84,84 @@ impl From<persistence::Error> for SettingsError {
 pub struct SettingsService {
     pool: SqlitePool,
     secrets: Arc<dyn Secrets>,
-    defaults: HashMap<Setting, String>,
-    overrides: HashMap<Setting, String>,
-    current: watch::Sender<Settings>,
+    defaults: HashMap<&'static str, String>,
+    overrides: HashMap<&'static str, String>,
 }
 
 impl SettingsService {
-    pub async fn load(
+    pub fn new(
         pool: SqlitePool,
         secrets: Arc<dyn Secrets>,
-        defaults: HashMap<Setting, String>,
-        overrides: HashMap<Setting, String>,
-    ) -> Result<Self, SettingsError> {
-        let service = Self {
+        defaults: HashMap<&'static str, String>,
+        overrides: HashMap<&'static str, String>,
+    ) -> Self {
+        Self {
             pool,
             secrets,
             defaults,
             overrides,
-            current: watch::Sender::new(Settings::default()),
-        };
-        service.reload().await?;
-        Ok(service)
-    }
-
-    pub fn current(&self) -> Settings {
-        self.current.borrow().clone()
-    }
-
-    pub fn subscribe(&self) -> watch::Receiver<Settings> {
-        self.current.subscribe()
-    }
-
-    pub fn view(&self) -> Vec<SettingView> {
-        let current = self.current.borrow();
-        Setting::ALL
-            .into_iter()
-            .map(|key| SettingView {
-                key,
-                value: (!key.is_secret()).then(|| current.get(key).to_string()),
-                is_set: !current.get(key).is_empty(),
-                overridden: self.overrides.contains_key(&key),
-            })
-            .collect()
-    }
-
-    pub async fn update(&self, changes: HashMap<Setting, String>) -> Result<(), SettingsError> {
-        let written = self.write(changes).await;
-        self.reload().await?;
-        written
-    }
-
-    async fn write(&self, changes: HashMap<Setting, String>) -> Result<(), SettingsError> {
-        for (key, value) in changes {
-            let value = value.trim();
-            match (key.is_secret(), value.is_empty()) {
-                (true, true) => self.secrets.delete(key.name())?,
-                (true, false) => self.secrets.set(key.name(), value)?,
-                (false, true) => repo::delete(&self.pool, key.name()).await?,
-                (false, false) => repo::set(&self.pool, key.name(), value).await?,
-            }
         }
-        Ok(())
     }
 
-    async fn reload(&self) -> Result<(), SettingsError> {
+    pub async fn resolve(&self) -> Result<Settings, SettingsError> {
         let mut stored = repo::all(&self.pool).await?;
         let mut values = HashMap::new();
-        for key in Setting::ALL {
-            let stored = if key.is_secret() {
-                self.secrets.get(key.name()).unwrap_or_else(|err| {
-                    tracing::error!(%err, key = key.name(), "failed to read secret");
+        for name in NAMES {
+            let stored = if SECRETS.contains(&name) {
+                self.secrets.get(name).unwrap_or_else(|err| {
+                    tracing::error!(%err, name, "failed to read secret");
                     None
                 })
             } else {
-                stored.remove(key.name())
+                stored.remove(name)
             };
             let value = self
                 .overrides
-                .get(&key)
+                .get(name)
                 .cloned()
                 .or(stored)
-                .or_else(|| self.defaults.get(&key).cloned())
+                .or_else(|| self.defaults.get(name).cloned())
                 .filter(|value| !value.is_empty());
             if let Some(value) = value {
-                values.insert(key, value);
+                values.insert(name, value);
             }
         }
-        self.current.send_replace(Settings(values));
+        Ok(Settings(values))
+    }
+
+    pub async fn view(&self) -> Result<Vec<SettingView>, SettingsError> {
+        let settings = self.resolve().await?;
+        Ok(NAMES
+            .into_iter()
+            .map(|name| {
+                let secret = SECRETS.contains(&name);
+                let value = settings.get(name);
+                SettingView {
+                    name,
+                    is_set: !value.is_empty(),
+                    value: (!secret).then_some(value),
+                    secret,
+                    overridden: self.overrides.contains_key(name),
+                }
+            })
+            .collect())
+    }
+
+    pub async fn update(&self, changes: HashMap<String, String>) -> Result<(), SettingsError> {
+        if let Some(name) = changes.keys().find(|name| !NAMES.contains(&name.as_str())) {
+            return Err(SettingsError::Unknown(name.clone()));
+        }
+        for (name, value) in changes {
+            let value = value.trim();
+            match (SECRETS.contains(&name.as_str()), value.is_empty()) {
+                (true, true) => self.secrets.delete(&name)?,
+                (true, false) => self.secrets.set(&name, value)?,
+                (false, true) => repo::delete(&self.pool, &name).await?,
+                (false, false) => repo::set(&self.pool, &name, value).await?,
+            }
+        }
         Ok(())
     }
-}
-
-#[cfg(test)]
-pub async fn some_settings(pool: SqlitePool, values: &[(Setting, &str)]) -> Arc<SettingsService> {
-    let service = SettingsService::load(
-        pool,
-        Arc::new(crate::infra::secrets::MemorySecrets::default()),
-        HashMap::new(),
-        HashMap::new(),
-    )
-    .await
-    .unwrap();
-    service
-        .update(
-            values
-                .iter()
-                .map(|(key, value)| (*key, value.to_string()))
-                .collect(),
-        )
-        .await
-        .unwrap();
-    Arc::new(service)
 }
 
 #[cfg(test)]
@@ -273,63 +172,54 @@ mod tests {
 
     async fn service(
         secrets: Arc<MemorySecrets>,
-        defaults: &[(Setting, &str)],
-        overrides: &[(Setting, &str)],
+        defaults: &[(&'static str, &str)],
+        overrides: &[(&'static str, &str)],
     ) -> SettingsService {
         let pool = connect("sqlite::memory:").await.unwrap();
-        let map = |pairs: &[(Setting, &str)]| {
+        let map = |pairs: &[(&'static str, &str)]| {
             pairs
                 .iter()
-                .map(|(key, value)| (*key, value.to_string()))
+                .map(|(name, value)| (*name, value.to_string()))
                 .collect()
         };
-        SettingsService::load(pool, secrets, map(defaults), map(overrides))
-            .await
-            .unwrap()
+        SettingsService::new(pool, secrets, map(defaults), map(overrides))
     }
 
-    fn change(key: Setting, value: &str) -> HashMap<Setting, String> {
-        HashMap::from([(key, value.to_string())])
+    fn change(name: &str, value: &str) -> HashMap<String, String> {
+        HashMap::from([(name.to_string(), value.to_string())])
     }
 
     #[tokio::test]
     async fn override_beats_stored_beats_default() {
         let service = service(
             Arc::default(),
-            &[
-                (Setting::ImapHost, "default"),
-                (Setting::ImapLabel, "default"),
-            ],
-            &[(Setting::ImapHost, "env")],
+            &[("imap_host", "default"), ("imap_label", "default")],
+            &[("imap_host", "env")],
         )
         .await;
 
+        service.update(change("imap_host", "stored")).await.unwrap();
         service
-            .update(HashMap::from([
-                (Setting::ImapHost, "stored".to_string()),
-                (Setting::ImapLabel, "stored".to_string()),
-            ]))
+            .update(change("imap_label", "stored"))
             .await
             .unwrap();
 
-        assert_eq!(service.current().get(Setting::ImapHost), "env");
-        assert_eq!(service.current().get(Setting::ImapLabel), "stored");
+        let settings = service.resolve().await.unwrap();
+        assert_eq!(settings.get("imap_host"), "env");
+        assert_eq!(settings.get("imap_label"), "stored");
     }
 
     #[tokio::test]
     async fn clearing_a_setting_falls_back_to_its_default() {
-        let service = service(Arc::default(), &[(Setting::ImapLabel, "default")], &[]).await;
+        let service = service(Arc::default(), &[("imap_label", "default")], &[]).await;
 
-        service
-            .update(change(Setting::ImapLabel, "mine"))
-            .await
-            .unwrap();
-        service
-            .update(change(Setting::ImapLabel, ""))
-            .await
-            .unwrap();
+        service.update(change("imap_label", "mine")).await.unwrap();
+        service.update(change("imap_label", "")).await.unwrap();
 
-        assert_eq!(service.current().get(Setting::ImapLabel), "default");
+        assert_eq!(
+            service.resolve().await.unwrap().get("imap_label"),
+            "default"
+        );
     }
 
     #[tokio::test]
@@ -338,92 +228,54 @@ mod tests {
         let service = service(secrets.clone(), &[], &[]).await;
 
         service
-            .update(change(Setting::DiscordToken, " abc "))
+            .update(change("discord_token", " abc "))
             .await
             .unwrap();
 
-        assert_eq!(
-            secrets.get("discord_token").unwrap(),
-            Some("abc".to_string())
-        );
+        assert_eq!(secrets.get("discord_token").unwrap(), Some("abc".into()));
         assert!(repo::all(&service.pool).await.unwrap().is_empty());
-        assert_eq!(service.current().get(Setting::DiscordToken), "abc");
 
-        service
-            .update(change(Setting::DiscordToken, ""))
-            .await
-            .unwrap();
+        service.update(change("discord_token", "")).await.unwrap();
         assert_eq!(secrets.get("discord_token").unwrap(), None);
     }
 
     #[tokio::test]
     async fn view_never_exposes_secret_values() {
-        let service = service(Arc::default(), &[], &[(Setting::OpenRouterApiKey, "sk")]).await;
-        service
-            .update(change(Setting::ImapUser, "me"))
-            .await
-            .unwrap();
+        let service = service(Arc::default(), &[], &[("openrouter_api_key", "sk")]).await;
+        service.update(change("imap_user", "me")).await.unwrap();
 
-        let view = service.view();
-        let find = |key| view.iter().find(|v| v.key == key).unwrap().clone();
+        let view = service.view().await.unwrap();
+        let find = |name| view.iter().find(|v| v.name == name).unwrap().clone();
 
         assert_eq!(
-            find(Setting::OpenRouterApiKey),
+            find("openrouter_api_key"),
             SettingView {
-                key: Setting::OpenRouterApiKey,
+                name: "openrouter_api_key",
                 value: None,
+                secret: true,
                 is_set: true,
                 overridden: true,
             }
         );
-        assert_eq!(find(Setting::ImapUser).value, Some("me".to_string()));
+        assert_eq!(find("imap_user").value, Some("me".into()));
     }
 
     #[tokio::test]
-    async fn subscribers_see_updates() {
+    async fn unknown_settings_are_rejected() {
         let service = service(Arc::default(), &[], &[]).await;
-        let mut changes = service.subscribe();
 
-        service
-            .update(change(Setting::DiscordChannel, "123"))
-            .await
-            .unwrap();
-
-        assert!(changes.has_changed().unwrap());
-        assert_eq!(
-            changes.borrow_and_update().get(Setting::DiscordChannel),
-            "123"
-        );
+        assert!(matches!(
+            service.update(change("bogus", "1")).await,
+            Err(SettingsError::Unknown(_))
+        ));
     }
 
-    #[test]
-    fn discord_is_configured_only_with_token_and_channel() {
-        let token_only = Settings(HashMap::from([(Setting::DiscordToken, "t".to_string())]));
-        let both = Settings(HashMap::from([
-            (Setting::DiscordToken, "t".to_string()),
-            (Setting::DiscordChannel, "1".to_string()),
-        ]));
+    #[tokio::test]
+    async fn missing_lists_unset_settings() {
+        let service = service(Arc::default(), &[], &[]).await;
+        service.update(change("discord_token", "t")).await.unwrap();
 
-        assert_eq!(token_only.discord(), None);
-        assert_eq!(
-            both.discord(),
-            Some(DiscordSettings {
-                token: "t".into(),
-                channel: "1".into()
-            })
-        );
-    }
-
-    #[test]
-    fn env_var_names_match_the_documented_ones() {
-        assert_eq!(Setting::DiscordToken.env_var(), "KITTZO_DISCORD_TOKEN");
-        assert_eq!(
-            Setting::ImapAppPassword.env_var(),
-            "KITTZO_IMAP_APP_PASSWORD"
-        );
-        assert_eq!(
-            Setting::OpenRouterApiKey.env_var(),
-            "KITTZO_OPENROUTER_API_KEY"
-        );
+        let settings = service.resolve().await.unwrap();
+        assert_eq!(settings.missing(&DISCORD), vec!["discord_channel"]);
     }
 }

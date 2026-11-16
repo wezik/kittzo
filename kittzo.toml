@@ -15,7 +15,7 @@ batch_limit = 100
 
 [email]
 imap_host = "imap.gmail.com"
-label = "kittzo/payments"
+label = "kittzo"
 poll_interval_secs = 30
 
 [openrouter]
