@@ -88,7 +88,7 @@ where
     .bind(schedule_id)
     .bind(occurrence_date)
     .bind(email_message_id)
-    .bind(ack_str(&payment.ack))
+    .bind(ack_str(payment.ack()))
     .fetch_optional(executor)
     .await
     .map_err(Error::from)?
@@ -100,8 +100,8 @@ where
 }
 
 pub async fn update(conn: &mut SqliteConnection, payment: &Payment) -> Result<Payment, Error> {
-    let (status, paid_at) = state_columns(&payment.state);
-    let next_version = payment.version.next();
+    let (status, paid_at) = state_columns(payment.state());
+    let next_version = payment.version().next();
 
     let result = sqlx::query(
         "UPDATE payments
@@ -112,9 +112,9 @@ pub async fn update(conn: &mut SqliteConnection, payment: &Payment) -> Result<Pa
     .bind(payment.updated_at)
     .bind(status)
     .bind(paid_at)
-    .bind(ack_str(&payment.ack))
+    .bind(ack_str(payment.ack()))
     .bind(payment.id.to_string())
-    .bind(i64::from(payment.version))
+    .bind(i64::from(payment.version()))
     .execute(&mut *conn)
     .await
     .map_err(Error::from)?;
@@ -135,10 +135,7 @@ pub async fn update(conn: &mut SqliteConnection, payment: &Payment) -> Result<Pa
     }
     tracing::info!(id = %payment.id, status, "updated payment");
 
-    Ok(Payment {
-        version: next_version,
-        ..payment.clone()
-    })
+    Ok(payment.clone().with_next_version())
 }
 
 pub async fn has_pending_ack<'e, E>(executor: E) -> Result<bool, Error>
@@ -204,7 +201,7 @@ where
     row_to_payment(row)
 }
 
-fn ack_str(ack: &Ack) -> &'static str {
+fn ack_str(ack: Ack) -> &'static str {
     match ack {
         Ack::Pending => "pending",
         Ack::Accepted => "accepted",
@@ -212,10 +209,10 @@ fn ack_str(ack: &Ack) -> &'static str {
     }
 }
 
-fn state_columns(state: &State) -> (&'static str, Option<OffsetDateTime>) {
+fn state_columns(state: State) -> (&'static str, Option<OffsetDateTime>) {
     match state {
         State::Unpaid => ("unpaid", None),
-        State::Paid { paid_at } => ("paid", Some(*paid_at)),
+        State::Paid { paid_at } => ("paid", Some(paid_at)),
     }
 }
 
@@ -259,17 +256,17 @@ fn row_to_payment(row: PaymentRow) -> Result<Payment, Error> {
         other => return Err(corrupt(&format!("invalid ack {other}"))),
     };
 
-    Ok(Payment {
+    Ok(Payment::restore(
         id,
         version,
-        created_at: row.created_at,
-        updated_at: row.updated_at,
+        row.created_at,
+        row.updated_at,
         total,
         details,
         source,
         state,
         ack,
-    })
+    ))
 }
 
 #[cfg(test)]
@@ -465,8 +462,8 @@ mod tests {
         // then
         let stored = find(&pool, payment.id).await.unwrap();
         assert_eq!(stored, paid);
-        assert_eq!(stored.version, Version::FIRST.next());
-        assert!(matches!(stored.state, State::Paid { .. }));
+        assert_eq!(stored.version(), Version::FIRST.next());
+        assert!(matches!(stored.state(), State::Paid { .. }));
     }
 
     #[tokio::test]
@@ -479,8 +476,8 @@ mod tests {
             some_payment_source_email(),
         );
         create(&pool, &payment).await.unwrap();
-        assert_eq!(find(&pool, payment.id).await.unwrap().ack, Ack::Pending);
-        payment.ack(false).unwrap();
+        assert_eq!(find(&pool, payment.id).await.unwrap().ack(), Ack::Pending);
+        payment.acknowledge(false).unwrap();
 
         // when
         update(&mut pool.acquire().await.unwrap(), &payment)
@@ -488,7 +485,7 @@ mod tests {
             .unwrap();
 
         // then
-        assert_eq!(find(&pool, payment.id).await.unwrap().ack, Ack::Rejected);
+        assert_eq!(find(&pool, payment.id).await.unwrap().ack(), Ack::Rejected);
     }
 
     #[tokio::test]

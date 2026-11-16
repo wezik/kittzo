@@ -157,7 +157,7 @@ impl DiscordConsumer {
         // acked via the UI before delivery (or acked on creation, like manual payments) -
         // nothing left to ask, and this is also what makes out-of-order delivery against
         // `withdraw` safe.
-        if payment.ack != Ack::Pending {
+        if payment.ack() != Ack::Pending {
             return Ok(());
         }
         // the outbox delivers at least once - a redelivered event must not post a second prompt.
@@ -494,7 +494,7 @@ mod tests {
     async fn handle_created_for_an_already_acked_payment_is_a_no_op() {
         let consumer = consumer().await;
         let payment = stored(&consumer.pool, Source::Manual).await;
-        assert_ne!(payment.ack, Ack::Pending);
+        assert_ne!(payment.ack(), Ack::Pending);
 
         let msg = OutboxMessage::from(Event::Created { id: payment.id });
 
@@ -604,7 +604,7 @@ mod tests {
     async fn process_republishes_a_delivery_that_keeps_failing() {
         let pool = connect("sqlite::memory:").await.unwrap();
         let payment = stored(&pool, email_source()).await;
-        assert_eq!(payment.ack, Ack::Pending);
+        assert_eq!(payment.ack(), Ack::Pending);
         // no `[discord.channels]` entry configured, so `post_prompt` returns `Retry` without
         // ever touching the network.
         let msg = OutboxMessage::from(Event::Created { id: payment.id });

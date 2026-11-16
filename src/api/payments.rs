@@ -67,18 +67,18 @@ enum PaymentStatusResponse {
 
 impl From<Payment> for PaymentResponse {
     fn from(payment: Payment) -> Self {
-        let (status, paid_at) = match payment.state {
+        let (status, paid_at) = match payment.state() {
             payment::State::Unpaid => (PaymentStatusResponse::Unpaid, None),
             payment::State::Paid { paid_at } => (PaymentStatusResponse::Paid, Some(paid_at.into())),
         };
         PaymentResponse {
             id: payment.id,
-            version: payment.version.into(),
+            version: payment.version().into(),
+            ack: payment.ack().into(),
             display_title: payment.details.display_title(),
             total: payment.total.into(),
             details: payment.details.into(),
             status,
-            ack: payment.ack.into(),
             paid_at,
             created_at: payment.created_at.into(),
             updated_at: payment.updated_at.into(),

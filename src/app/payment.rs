@@ -91,7 +91,7 @@ impl Service {
 
     pub async fn ack(&self, id: Uuid, accepted: bool) -> Result<Payment, Error> {
         let mut payment = sqlx_payment_repository::find(&self.pool, id).await?;
-        let event = payment.ack(accepted)?;
+        let event = payment.acknowledge(accepted)?;
 
         let mut tx = start_tx(&self.pool).await?;
 
