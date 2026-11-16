@@ -129,6 +129,9 @@ pub enum Error {
     #[error("payment recipient can't be empty")]
     InvalidRecipient,
 
+    #[error("only standard details are supported here")]
+    UnsupportedDetails,
+
     #[error("payment can't go from {from:?} to {to:?}")]
     InvalidTransition { from: String, to: String },
 }

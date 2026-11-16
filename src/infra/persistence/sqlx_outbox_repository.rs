@@ -58,7 +58,7 @@ pub async fn claim_batch(
     .fetch_all(pool)
     .await
     .map_err(unexpected)
-    .map(|rows| rows.iter().map(row_to_message).collect())
+    .map(|rows| rows.iter().filter_map(row_to_message).collect())
 }
 
 pub async fn mark_processed(pool: &SqlitePool, id: Uuid) -> Result<(), Error> {
@@ -74,14 +74,17 @@ pub async fn mark_processed(pool: &SqlitePool, id: Uuid) -> Result<(), Error> {
     Ok(())
 }
 
-fn row_to_message(row: &SqliteRow) -> OutboxMessage {
+fn row_to_message(row: &SqliteRow) -> Option<OutboxMessage> {
     let id: String = row.get("id");
-    OutboxMessage {
-        id: Uuid::parse_str(&id).expect("invalid outbox id uuid"),
+    let id = Uuid::parse_str(&id)
+        .inspect_err(|err| tracing::error!(%err, id, "skipping outbox row with invalid id"))
+        .ok()?;
+    Some(OutboxMessage {
+        id,
         event_type: row.get("event_type"),
         aggregate_id: row.get("aggregate_id"),
         payload: row.get("payload"),
-    }
+    })
 }
 
 #[cfg(test)]

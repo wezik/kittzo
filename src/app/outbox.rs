@@ -33,7 +33,7 @@ impl OutboxRelayConfig {
     }
 
     pub fn retry_after(&self) -> SignedDuration {
-        SignedDuration::seconds(self.retry_after_secs as i64)
+        SignedDuration::seconds(i64::try_from(self.retry_after_secs).unwrap_or(i64::MAX))
     }
 }
 

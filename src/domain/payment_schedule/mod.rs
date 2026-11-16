@@ -83,19 +83,18 @@ impl PaymentSchedule {
         self.next_due_at = self.recurrence.next_occurrence(self.next_due_at);
         self.updated_at = OffsetDateTime::now_utc();
 
-        // update details
         let next_title = next_title_from_template(&self.title_template, self.next_due_at);
-        let (acc_number, recipient) = match &self.next_details {
-            Details::Standard {
-                title: _,
-                account_number,
-                recipient,
-            } => (account_number, recipient),
-            // NOTE: Acceptable panic here this is an invariant that should not be matched unless we explicitly support it
-            _ => panic!("expected standard details, no other details are supported"),
+        let Details::Standard {
+            account_number,
+            recipient,
+            ..
+        } = &self.next_details
+        else {
+            return Err(Error::UnsupportedDetails);
         };
 
-        self.next_details = Details::standard(next_title, acc_number.clone(), recipient.clone())?;
+        self.next_details =
+            Details::standard(next_title, account_number.clone(), recipient.clone())?;
         Ok(())
     }
 }

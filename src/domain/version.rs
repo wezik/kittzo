@@ -23,13 +23,15 @@ impl From<u32> for Version {
 
 impl From<Version> for i64 {
     fn from(value: Version) -> Self {
-        value.0 as i64
+        i64::from(value.0)
     }
 }
 
-impl From<i64> for Version {
-    fn from(value: i64) -> Self {
-        Version(value as u32)
+impl TryFrom<i64> for Version {
+    type Error = std::num::TryFromIntError;
+
+    fn try_from(value: i64) -> Result<Self, Self::Error> {
+        u32::try_from(value).map(Version)
     }
 }
 

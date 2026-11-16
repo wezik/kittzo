@@ -224,7 +224,10 @@ fn row_to_payment(row: PaymentRow) -> Result<Payment, Error> {
         tracing::error!(%err, id = %row.id, "invalid payment id uuid");
         Error::Unexpected
     })?;
-    let version = Version::from(row.version);
+    let version = Version::try_from(row.version).map_err(|err| {
+        tracing::error!(%err, payment_id = %id, "invalid payment version");
+        Error::Unexpected
+    })?;
 
     let amount = row.total_amount;
     let currency = row.total_currency;

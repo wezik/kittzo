@@ -34,7 +34,7 @@ pub async fn mark_processed(
              updated_at = excluded.updated_at",
     )
     .bind(message_id)
-    .bind(payments_created as i64)
+    .bind(i64::try_from(payments_created).unwrap_or(i64::MAX))
     .bind(OffsetDateTime::now_utc())
     .execute(pool)
     .await
@@ -59,14 +59,14 @@ pub async fn record_failure(
          RETURNING attempts",
     )
     .bind(message_id)
-    .bind(max_attempts as i64)
+    .bind(i64::from(max_attempts))
     .bind(error)
     .bind(OffsetDateTime::now_utc())
     .fetch_one(pool)
     .await
     .map_err(unexpected)?
     .get("attempts");
-    Ok(attempts as u32)
+    Ok(u32::try_from(attempts).unwrap_or(u32::MAX))
 }
 
 #[cfg(test)]
