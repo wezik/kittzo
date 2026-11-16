@@ -58,7 +58,7 @@ impl Default for EmailConfig {
     fn default() -> Self {
         Self {
             imap_host: "imap.gmail.com".to_string(),
-            label: "kittzo/payments".to_string(),
+            label: "kittzo".to_string(),
             poll_interval_secs: EmailWatchConfig::default().poll_interval_secs,
         }
     }
@@ -211,7 +211,7 @@ mod tests {
             "#,
         );
         assert_eq!(cfg.email.imap_host, "imap.example.com");
-        assert_eq!(cfg.email.label, "kittzo/payments");
+        assert_eq!(cfg.email.label, "kittzo");
     }
 
     #[test]
