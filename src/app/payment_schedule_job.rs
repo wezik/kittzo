@@ -5,7 +5,8 @@ use time::OffsetDateTime;
 
 use crate::app::payment_schedule::PaymentScheduleService;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Deserialize)]
+#[serde(default)]
 pub struct PaymentScheduleJobConfig {
     pub poll_interval_secs: u64,
 }
@@ -13,7 +14,7 @@ pub struct PaymentScheduleJobConfig {
 impl Default for PaymentScheduleJobConfig {
     fn default() -> Self {
         Self {
-            poll_interval_secs: 1800,
+            poll_interval_secs: 3600,
         }
     }
 }

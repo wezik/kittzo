@@ -8,7 +8,8 @@ use crate::infra::persistence::sqlx_processed_email_repository as processed;
 use crate::app::email::Service;
 use crate::domain::email::Mailbox;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Deserialize)]
+#[serde(default)]
 pub struct EmailWatchConfig {
     pub poll_interval_secs: u64,
     pub max_attempts: u32,

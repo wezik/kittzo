@@ -7,7 +7,8 @@ use time::SignedDuration;
 use crate::app::event_bus::EventBus;
 use crate::infra::persistence::{self, sqlx_outbox_repository as outbox_repo};
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Deserialize)]
+#[serde(default)]
 pub struct OutboxRelayConfig {
     pub poll_interval_secs: u64,
     pub retry_after_secs: u64,

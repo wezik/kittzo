@@ -71,7 +71,7 @@ async fn serve(config: Config, pending_ack: Arc<AtomicBool>) {
     let schedule_service = Arc::new(PaymentScheduleService::new(pool.clone()));
 
     tokio::spawn(
-        PaymentScheduleJob::new(schedule_service.clone(), config.payment_schedule()).run(),
+        PaymentScheduleJob::new(schedule_service.clone(), config.payment_schedule.clone()).run(),
     );
     tokio::spawn(PendingAckWatch::new(payment_service.clone(), pending_ack).run());
 
@@ -94,7 +94,7 @@ async fn serve(config: Config, pending_ack: Arc<AtomicBool>) {
             )
             .run(),
         );
-        tokio::spawn(OutboxRelayJob::new(pool.clone(), bus.clone(), config.outbox()).run());
+        tokio::spawn(OutboxRelayJob::new(pool.clone(), bus.clone(), config.outbox.clone()).run());
         tokio::spawn(
             DiscordReactionListener::new(
                 settings.get("discord_token"),
@@ -123,7 +123,13 @@ async fn serve(config: Config, pending_ack: Arc<AtomicBool>) {
             settings.get("imap_label"),
         ));
         tokio::spawn(
-            EmailWatchJob::new(mailbox, email_service, pool.clone(), config.email.watch()).run(),
+            EmailWatchJob::new(
+                mailbox,
+                email_service,
+                pool.clone(),
+                config.email.watch.clone(),
+            )
+            .run(),
         );
     }
 

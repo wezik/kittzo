@@ -13,8 +13,8 @@ pub struct Config {
     pub discord: DiscordConfig,
     pub email: EmailConfig,
     pub openrouter: OpenRouterConfig,
-    payment_schedule: TomlPaymentScheduleConfig,
-    outbox: TomlOutboxConfig,
+    pub payment_schedule: PaymentScheduleJobConfig,
+    pub outbox: OutboxRelayConfig,
 }
 
 impl Default for Config {
@@ -25,8 +25,8 @@ impl Default for Config {
             discord: DiscordConfig::default(),
             email: EmailConfig::default(),
             openrouter: OpenRouterConfig::default(),
-            payment_schedule: TomlPaymentScheduleConfig::default(),
-            outbox: TomlOutboxConfig::default(),
+            payment_schedule: PaymentScheduleJobConfig::default(),
+            outbox: OutboxRelayConfig::default(),
         }
     }
 }
@@ -51,7 +51,8 @@ impl Default for DiscordConfig {
 pub struct EmailConfig {
     pub imap_host: String,
     pub label: String,
-    pub poll_interval_secs: u64,
+    #[serde(flatten)]
+    pub watch: EmailWatchConfig,
 }
 
 impl Default for EmailConfig {
@@ -59,16 +60,7 @@ impl Default for EmailConfig {
         Self {
             imap_host: "imap.gmail.com".to_string(),
             label: "kittzo".to_string(),
-            poll_interval_secs: EmailWatchConfig::default().poll_interval_secs,
-        }
-    }
-}
-
-impl EmailConfig {
-    pub fn watch(&self) -> EmailWatchConfig {
-        EmailWatchConfig {
-            poll_interval_secs: self.poll_interval_secs,
-            ..EmailWatchConfig::default()
+            watch: EmailWatchConfig::default(),
         }
     }
 }
@@ -114,14 +106,6 @@ impl Config {
         Config::load_from(Path::new(DEFAULT_PATH))
     }
 
-    pub fn payment_schedule(&self) -> PaymentScheduleJobConfig {
-        self.payment_schedule.clone().into()
-    }
-
-    pub fn outbox(&self) -> OutboxRelayConfig {
-        self.outbox.clone().into()
-    }
-
     fn load_from(path: &Path) -> Config {
         match std::fs::read_to_string(path) {
             Ok(contents) => {
@@ -140,61 +124,6 @@ impl Config {
 
     fn parse(toml_str: &str) -> Config {
         toml::from_str(toml_str).expect("invalid config")
-    }
-}
-
-/// Raw TOML shape for `[payment_schedule]` — kept separate from the domain
-/// `PaymentScheduleConfig` so the domain type stays serde-free; this is the only
-/// place that knows the wire format, converting into the domain type via `From`.
-#[derive(Debug, Clone, Deserialize, PartialEq)]
-#[serde(default)]
-struct TomlPaymentScheduleConfig {
-    poll_interval_secs: u64,
-}
-
-impl Default for TomlPaymentScheduleConfig {
-    fn default() -> Self {
-        Self {
-            poll_interval_secs: 3600,
-        }
-    }
-}
-
-impl From<TomlPaymentScheduleConfig> for PaymentScheduleJobConfig {
-    fn from(toml: TomlPaymentScheduleConfig) -> Self {
-        PaymentScheduleJobConfig {
-            poll_interval_secs: toml.poll_interval_secs,
-        }
-    }
-}
-
-/// Raw TOML shape for `[outbox]` - same split as `TomlPaymentScheduleConfig` above.
-#[derive(Debug, Clone, Deserialize, PartialEq)]
-#[serde(default)]
-struct TomlOutboxConfig {
-    poll_interval_secs: u64,
-    retry_after_secs: u64,
-    batch_limit: i64,
-}
-
-impl Default for TomlOutboxConfig {
-    fn default() -> Self {
-        let defaults = OutboxRelayConfig::default();
-        Self {
-            poll_interval_secs: defaults.poll_interval_secs,
-            retry_after_secs: defaults.retry_after_secs,
-            batch_limit: defaults.batch_limit,
-        }
-    }
-}
-
-impl From<TomlOutboxConfig> for OutboxRelayConfig {
-    fn from(toml: TomlOutboxConfig) -> Self {
-        OutboxRelayConfig {
-            poll_interval_secs: toml.poll_interval_secs,
-            retry_after_secs: toml.retry_after_secs,
-            batch_limit: toml.batch_limit,
-        }
     }
 }
 
@@ -237,6 +166,8 @@ mod tests {
         let cfg = Config::parse(include_str!("../../kittzo.toml"));
         assert_eq!(cfg.server_port, 7878);
         assert_eq!(cfg.openrouter.model, "z-ai/glm-5.3-flash");
+        assert_eq!(cfg.email.watch.poll_interval_secs, 30);
+        assert_eq!(cfg.email.watch.max_attempts, 3);
     }
 
     #[test]
@@ -256,20 +187,20 @@ mod tests {
     #[test]
     fn payment_schedule_section_falls_back_to_defaults_when_absent() {
         let cfg = Config::parse("server_port = 1234\n");
-        assert_eq!(cfg.payment_schedule().poll_interval_secs, 3600);
+        assert_eq!(cfg.payment_schedule.poll_interval_secs, 3600);
     }
 
     #[test]
     fn payment_schedule_section_parses_when_present() {
         let cfg = Config::parse("[payment_schedule]\npoll_interval_secs = 60\n");
-        assert_eq!(cfg.payment_schedule().poll_interval_secs, 60);
+        assert_eq!(cfg.payment_schedule.poll_interval_secs, 60);
     }
 
     #[test]
     fn outbox_section_falls_back_to_defaults_when_absent() {
         let cfg = Config::parse("server_port = 1234\n");
-        assert_eq!(cfg.outbox().poll_interval_secs, 1);
-        assert_eq!(cfg.outbox().batch_limit, 100);
+        assert_eq!(cfg.outbox.poll_interval_secs, 1);
+        assert_eq!(cfg.outbox.batch_limit, 100);
     }
 
     #[test]
@@ -277,9 +208,9 @@ mod tests {
         let cfg = Config::parse(
             "[outbox]\npoll_interval_secs = 2\nretry_after_secs = 10\nbatch_limit = 5\n",
         );
-        assert_eq!(cfg.outbox().poll_interval_secs, 2);
-        assert_eq!(cfg.outbox().retry_after_secs, 10);
-        assert_eq!(cfg.outbox().batch_limit, 5);
+        assert_eq!(cfg.outbox.poll_interval_secs, 2);
+        assert_eq!(cfg.outbox.retry_after_secs, 10);
+        assert_eq!(cfg.outbox.batch_limit, 5);
     }
 
     #[test]
