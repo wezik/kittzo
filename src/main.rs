@@ -16,7 +16,6 @@ use app::payment;
 use app::payment_schedule::PaymentScheduleService;
 use app::payment_schedule_job::PaymentScheduleJob;
 use app::settings::{self, SettingsService};
-use app::startup_task::StartupTask;
 use infra::Config;
 use infra::config::OpenRouterConfig;
 use infra::discord::{DiscordConsumer, DiscordReactionListener};
@@ -71,13 +70,10 @@ async fn serve(config: Config, pending_ack: Arc<AtomicBool>) {
     let payment_service = Arc::new(payment::Service::new(pool.clone()));
     let schedule_service = Arc::new(PaymentScheduleService::new(pool.clone()));
 
-    let mut tasks: Vec<Arc<dyn StartupTask>> = vec![
-        Arc::new(PaymentScheduleJob::new(
-            schedule_service.clone(),
-            config.payment_schedule(),
-        )),
-        Arc::new(PendingAckWatch::new(payment_service.clone(), pending_ack)),
-    ];
+    tokio::spawn(
+        PaymentScheduleJob::new(schedule_service.clone(), config.payment_schedule()).run(),
+    );
+    tokio::spawn(PendingAckWatch::new(payment_service.clone(), pending_ack).run());
 
     let bus: Arc<dyn EventBus> = Arc::new(TokioEventBus::new());
     let missing = settings.missing(&settings::DISCORD);
@@ -89,22 +85,24 @@ async fn serve(config: Config, pending_ack: Arc<AtomicBool>) {
     } else {
         tracing::info!("discord enabled");
         // subscribes before the relay job below can publish anything.
-        tasks.push(Arc::new(DiscordConsumer::new(
-            settings.get("discord_token"),
-            HashMap::from([("confirmations".to_string(), settings.get("discord_channel"))]),
-            pool.clone(),
-            bus.clone(),
-        )));
-        tasks.push(Arc::new(OutboxRelayJob::new(
-            pool.clone(),
-            bus.clone(),
-            config.outbox(),
-        )));
-        tasks.push(Arc::new(DiscordReactionListener::new(
-            settings.get("discord_token"),
-            pool.clone(),
-            payment_service.clone(),
-        )));
+        tokio::spawn(
+            DiscordConsumer::new(
+                settings.get("discord_token"),
+                HashMap::from([("confirmations".to_string(), settings.get("discord_channel"))]),
+                pool.clone(),
+                bus.clone(),
+            )
+            .run(),
+        );
+        tokio::spawn(OutboxRelayJob::new(pool.clone(), bus.clone(), config.outbox()).run());
+        tokio::spawn(
+            DiscordReactionListener::new(
+                settings.get("discord_token"),
+                pool.clone(),
+                payment_service.clone(),
+            )
+            .run(),
+        );
     }
 
     let missing = settings.missing(&settings::EMAIL);
@@ -124,19 +122,9 @@ async fn serve(config: Config, pending_ack: Arc<AtomicBool>) {
             settings.get("imap_app_password"),
             settings.get("imap_label"),
         ));
-        tasks.push(Arc::new(EmailWatchJob::new(
-            mailbox,
-            email_service,
-            pool.clone(),
-            config.email.watch(),
-        )));
-    }
-
-    for task in tasks {
-        tokio::spawn(async move {
-            tracing::info!(name = task.name(), "running startup task");
-            task.run().await;
-        });
+        tokio::spawn(
+            EmailWatchJob::new(mailbox, email_service, pool.clone(), config.email.watch()).run(),
+        );
     }
 
     let state = AppState {

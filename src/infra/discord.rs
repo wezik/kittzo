@@ -2,9 +2,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use async_trait::async_trait;
 use sqlx::{Row, SqlitePool};
-use tokio::sync::{Mutex, broadcast};
+use tokio::sync::broadcast;
 use twilight_gateway::{Event as GatewayEvent, EventTypeFlags, Intents, Shard, ShardId, StreamExt};
 use twilight_http::Client;
 use twilight_http::error::ErrorType;
@@ -19,7 +18,6 @@ use uuid::Uuid;
 use crate::app::event_bus::EventBus;
 use crate::app::payment;
 use crate::app::run::retrying;
-use crate::app::startup_task::StartupTask;
 use crate::domain::event::{Codec, OutboxMessage};
 use crate::domain::payment::{Ack, Event, Payment, Source};
 use crate::infra::codec::JsonCodec;
@@ -44,7 +42,7 @@ pub struct DiscordConsumer {
     channels: HashMap<String, String>,
     pool: SqlitePool,
     bus: Arc<dyn EventBus>,
-    receiver: Mutex<broadcast::Receiver<OutboxMessage>>,
+    receiver: broadcast::Receiver<OutboxMessage>,
     nack_delay: Duration,
 }
 
@@ -61,7 +59,7 @@ impl DiscordConsumer {
             channels,
             pool,
             bus,
-            receiver: Mutex::new(receiver),
+            receiver,
             nack_delay: NACK_DELAY,
         }
     }
@@ -263,17 +261,10 @@ impl DiscordConsumer {
         }
         Ok(())
     }
-}
 
-#[async_trait]
-impl StartupTask for DiscordConsumer {
-    fn name(&self) -> &str {
-        "discord-consumer"
-    }
-
-    async fn run(&self) {
+    pub async fn run(mut self) {
         loop {
-            let received = self.receiver.lock().await.recv().await;
+            let received = self.receiver.recv().await;
             match received {
                 Ok(message) => self.process(message).await,
                 Err(broadcast::error::RecvError::Lagged(n)) => {
@@ -284,9 +275,7 @@ impl StartupTask for DiscordConsumer {
         }
         tracing::warn!("event bus closed");
     }
-}
 
-impl DiscordConsumer {
     async fn process(&self, message: OutboxMessage) {
         let outcome = retrying(
             DELIVERY_ATTEMPTS,
@@ -362,15 +351,8 @@ impl DiscordReactionListener {
                 .ok()
         }))
     }
-}
 
-#[async_trait]
-impl StartupTask for DiscordReactionListener {
-    fn name(&self) -> &str {
-        "discord-reaction-listener"
-    }
-
-    async fn run(&self) {
+    pub async fn run(self) {
         // the bot reacts to its own prompt to give the human something to click, so without
         // knowing its own id every prompt would instantly self-approve.
         let own_id = match Client::new(self.token.clone()).current_user().await {
@@ -603,7 +585,7 @@ mod tests {
             channels: HashMap::new(),
             pool,
             bus,
-            receiver: Mutex::new(receiver),
+            receiver,
             nack_delay: Duration::ZERO,
         }
     }

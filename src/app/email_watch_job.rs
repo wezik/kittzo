@@ -1,10 +1,8 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use async_trait::async_trait;
 use sqlx::SqlitePool;
 
-use crate::app::startup_task::StartupTask;
 use crate::infra::persistence::sqlx_processed_email_repository as processed;
 
 use crate::app::email::Service;
@@ -108,15 +106,8 @@ impl EmailWatchJob {
             }
         }
     }
-}
 
-#[async_trait]
-impl StartupTask for EmailWatchJob {
-    fn name(&self) -> &str {
-        "email-watch-job"
-    }
-
-    async fn run(&self) {
+    pub async fn run(self) {
         loop {
             self.process().await;
             tokio::time::sleep(Duration::from_secs(self.config.poll_interval_secs)).await;
@@ -136,6 +127,7 @@ mod tests {
     use crate::domain::money::some_money;
     use crate::domain::payment::{Payment, Source, some_standard_details};
     use crate::infra::persistence::connect;
+    use async_trait::async_trait;
     use uuid::Uuid;
 
     struct FakeMailbox(Vec<Email>);

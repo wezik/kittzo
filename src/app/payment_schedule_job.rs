@@ -1,10 +1,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use async_trait::async_trait;
 use time::OffsetDateTime;
-
-use crate::app::startup_task::StartupTask;
 
 use crate::app::payment_schedule::PaymentScheduleService;
 
@@ -42,15 +39,8 @@ impl PaymentScheduleJob {
             config,
         }
     }
-}
 
-#[async_trait]
-impl StartupTask for PaymentScheduleJob {
-    fn name(&self) -> &str {
-        "payment-schedules-job"
-    }
-
-    async fn run(&self) {
+    pub async fn run(self) {
         loop {
             let today = OffsetDateTime::now_utc().date();
             match self.schedule_service.process_due(today).await {

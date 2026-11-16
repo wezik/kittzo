@@ -1,14 +1,11 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use async_trait::async_trait;
 use sqlx::SqlitePool;
 use time::SignedDuration;
 
 use crate::app::event_bus::EventBus;
 use crate::infra::persistence::{self, sqlx_outbox_repository as outbox_repo};
-
-use super::startup_task::StartupTask;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct OutboxRelayConfig {
@@ -68,15 +65,8 @@ impl OutboxRelayJob {
         }
         Ok(())
     }
-}
 
-#[async_trait]
-impl StartupTask for OutboxRelayJob {
-    fn name(&self) -> &str {
-        "outbox-relay-job"
-    }
-
-    async fn run(&self) {
+    pub async fn run(self) {
         loop {
             if let Err(err) = self.process().await {
                 tracing::error!(%err, "failed to process outbox");

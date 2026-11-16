@@ -2,15 +2,12 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use async_trait::async_trait;
-
 use tao::event::{Event, StartCause};
 use tao::event_loop::{ControlFlow, EventLoopBuilder};
 use tray_icon::menu::{Menu, MenuEvent, MenuItem};
 use tray_icon::{Icon, TrayIcon, TrayIconBuilder};
 
 use crate::app::payment;
-use crate::app::startup_task::StartupTask;
 
 const ICON_BYTES: &[u8] = include_bytes!("../../resources/icons/kittzo2_32.png");
 const BELL_ICON_BYTES: &[u8] = include_bytes!("../../resources/icons/kittzo2_bell_32.png");
@@ -28,15 +25,8 @@ impl PendingAckWatch {
             pending_ack,
         }
     }
-}
 
-#[async_trait]
-impl StartupTask for PendingAckWatch {
-    fn name(&self) -> &str {
-        "pending-ack-watch"
-    }
-
-    async fn run(&self) {
+    pub async fn run(self) {
         loop {
             if let Ok(pending) = self.payment_service.has_pending_ack().await {
                 self.pending_ack.store(pending, Ordering::Relaxed);
