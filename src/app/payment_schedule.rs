@@ -28,8 +28,8 @@ pub enum PaymentScheduleError {
     #[error(transparent)]
     Payment(#[from] payment::Error),
 
-    #[error("unexpected persistence error")]
-    Persistence,
+    #[error(transparent)]
+    Persistence(persistence::Error),
 }
 
 impl From<persistence::Error> for PaymentScheduleError {
@@ -38,7 +38,7 @@ impl From<persistence::Error> for PaymentScheduleError {
             persistence::Error::AlreadyExists => PaymentScheduleError::AlreadyExists,
             persistence::Error::NotFound => PaymentScheduleError::NotFound,
             persistence::Error::ConcurrentUpdate => PaymentScheduleError::ConcurrentUpdate,
-            persistence::Error::Unexpected => PaymentScheduleError::Persistence,
+            err => PaymentScheduleError::Persistence(err),
         }
     }
 }

@@ -4,7 +4,7 @@ use uuid::Uuid;
 
 use crate::domain::event::OutboxMessage;
 
-use super::{Error, unexpected};
+use super::Error;
 
 /// Takes any executor (`&pool` for a standalone write, `&mut *tx` to join a transaction a
 /// caller already opened, e.g. alongside `sqlx_payment_repository::create`).
@@ -25,7 +25,7 @@ where
     .bind(OffsetDateTime::now_utc())
     .execute(executor)
     .await
-    .map_err(unexpected)?;
+    .map_err(Error::from)?;
     tracing::info!(id = %msg.id, event_type = %msg.event_type, aggregate_id = %msg.aggregate_id, "created outbox message");
     Ok(())
 }
@@ -57,7 +57,7 @@ pub async fn claim_batch(
     .bind(limit)
     .fetch_all(pool)
     .await
-    .map_err(unexpected)
+    .map_err(Error::from)
     .map(|rows| rows.iter().filter_map(row_to_message).collect())
 }
 
@@ -67,7 +67,7 @@ pub async fn mark_processed(pool: &SqlitePool, id: Uuid) -> Result<(), Error> {
         .bind(id.to_string())
         .execute(pool)
         .await
-        .map_err(unexpected)?;
+        .map_err(Error::from)?;
     if result.rows_affected() == 0 {
         tracing::error!(%id, "outbox message to mark processed not found, it will be redelivered");
     }

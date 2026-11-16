@@ -24,8 +24,8 @@ pub enum Error {
     #[error("payment updated concurrently")]
     ConcurrentUpdate,
 
-    #[error("unexpected persistence error")]
-    Persistence,
+    #[error(transparent)]
+    Persistence(persistence::Error),
 }
 
 impl From<persistence::Error> for Error {
@@ -34,7 +34,7 @@ impl From<persistence::Error> for Error {
             persistence::Error::AlreadyExists => Error::AlreadyExists,
             persistence::Error::NotFound => Error::NotFound,
             persistence::Error::ConcurrentUpdate => Error::ConcurrentUpdate,
-            persistence::Error::Unexpected => Error::Persistence,
+            err => Error::Persistence(err),
         }
     }
 }

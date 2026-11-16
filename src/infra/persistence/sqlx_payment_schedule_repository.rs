@@ -5,7 +5,7 @@ use uuid::Uuid;
 use crate::domain::payment::Details;
 use crate::domain::payment_schedule::{PaymentSchedule, Recurrence};
 use crate::domain::version::Version;
-use crate::infra::persistence::{Error, unexpected};
+use crate::infra::persistence::Error;
 
 use super::{details_columns, details_from_columns, total_from_row};
 
@@ -37,7 +37,7 @@ where
     .bind(schedule.next_due_at)
     .execute(executor)
     .await
-    .map_err(unexpected)?;
+    .map_err(Error::from)?;
 
     if result.rows_affected() == 0 {
         return Err(Error::AlreadyExists);
@@ -73,14 +73,14 @@ pub async fn update(
     .bind(i64::from(schedule.version))
     .execute(&mut *conn)
     .await
-    .map_err(unexpected)?;
+    .map_err(Error::from)?;
 
     if result.rows_affected() == 0 {
         let exists = sqlx::query("SELECT 1 FROM payment_schedules WHERE id = ?")
             .bind(schedule.id.to_string())
             .fetch_optional(&mut *conn)
             .await
-            .map_err(unexpected)?
+            .map_err(Error::from)?
             .is_some();
 
         return Err(if exists {
@@ -105,7 +105,7 @@ where
         sqlx::query("SELECT * FROM payment_schedules ORDER BY created_at")
             .fetch_all(executor)
             .await
-            .map_err(unexpected)?
+            .map_err(Error::from)?
             .iter()
             .filter_map(row_to_schedule)
             .collect(),
@@ -121,7 +121,7 @@ where
             .bind(today)
             .fetch_all(executor)
             .await
-            .map_err(unexpected)?
+            .map_err(Error::from)?
             .iter()
             .filter_map(row_to_schedule)
             .collect(),
@@ -136,7 +136,7 @@ where
         .bind(id.to_string())
         .execute(executor)
         .await
-        .map_err(unexpected)?;
+        .map_err(Error::from)?;
     if result.rows_affected() == 0 {
         return Err(Error::NotFound);
     }

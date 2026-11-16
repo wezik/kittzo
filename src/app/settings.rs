@@ -69,17 +69,11 @@ pub enum SettingsError {
     #[error("unknown setting {0}")]
     Unknown(String),
 
-    #[error("unexpected persistence error")]
-    Persistence,
+    #[error(transparent)]
+    Persistence(#[from] persistence::Error),
 
     #[error(transparent)]
     Secrets(#[from] SecretsError),
-}
-
-impl From<persistence::Error> for SettingsError {
-    fn from(_: persistence::Error) -> Self {
-        SettingsError::Persistence
-    }
 }
 
 pub struct SettingsService {

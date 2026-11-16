@@ -8,7 +8,7 @@ use crate::domain::payment::{
 };
 use crate::domain::version::Version;
 
-use crate::infra::persistence::{Error, details_columns, details_from_columns, unexpected};
+use crate::infra::persistence::{Error, details_columns, details_from_columns};
 
 // sqlite's `Uuid` decode expects a 16-byte BLOB, but ids are stored as TEXT (`.to_string()`),
 // so `id`/`schedule_id` are decoded as `String` here and parsed by hand in `row_to_payment`.
@@ -91,7 +91,7 @@ where
     .bind(ack_str(&payment.ack))
     .fetch_optional(executor)
     .await
-    .map_err(unexpected)?
+    .map_err(Error::from)?
     .ok_or(Error::AlreadyExists)?;
 
     let payment = row_to_payment(row)?;
@@ -117,14 +117,14 @@ pub async fn update(conn: &mut SqliteConnection, payment: &Payment) -> Result<Pa
     .bind(i64::from(payment.version))
     .execute(&mut *conn)
     .await
-    .map_err(unexpected)?;
+    .map_err(Error::from)?;
 
     if result.rows_affected() == 0 {
         let exists = sqlx::query("SELECT 1 FROM payments WHERE id = ?")
             .bind(payment.id.to_string())
             .fetch_optional(&mut *conn)
             .await
-            .map_err(unexpected)?
+            .map_err(Error::from)?
             .is_some();
 
         return Err(if exists {
@@ -148,7 +148,7 @@ where
     sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM payments WHERE ack = 'pending')")
         .fetch_one(executor)
         .await
-        .map_err(unexpected)
+        .map_err(Error::from)
 }
 
 pub async fn find_all<'e, E>(executor: E, query: Option<ListQuery>) -> Result<Vec<Payment>, Error>
@@ -184,7 +184,7 @@ where
     sqlx::query_as::<_, PaymentRow>(sqlx::AssertSqlSafe(sql))
         .fetch_all(executor)
         .await
-        .map_err(unexpected)?
+        .map_err(Error::from)?
         .into_iter()
         .map(row_to_payment)
         .collect()
@@ -198,7 +198,7 @@ where
         .bind(id.to_string())
         .fetch_optional(executor)
         .await
-        .map_err(unexpected)?
+        .map_err(Error::from)?
         .ok_or(Error::NotFound)?;
 
     row_to_payment(row)
@@ -220,91 +220,44 @@ fn state_columns(state: &State) -> (&'static str, Option<OffsetDateTime>) {
 }
 
 fn row_to_payment(row: PaymentRow) -> Result<Payment, Error> {
-    let id = Uuid::parse_str(&row.id).map_err(|err| {
-        tracing::error!(%err, id = %row.id, "invalid payment id uuid");
-        Error::Unexpected
-    })?;
-    let version = Version::try_from(row.version).map_err(|err| {
-        tracing::error!(%err, payment_id = %id, "invalid payment version");
-        Error::Unexpected
-    })?;
+    let corrupt = |what: &str| Error::Corrupt(format!("payment {}: {what}", row.id));
+    let id = Uuid::parse_str(&row.id).map_err(|_| corrupt("invalid id"))?;
+    let version = Version::try_from(row.version).map_err(|_| corrupt("invalid version"))?;
+    let total = Money::from_parts(&row.total_currency, &row.total_amount)
+        .map_err(|err| corrupt(&format!("invalid total: {err}")))?;
 
-    let amount = row.total_amount;
-    let currency = row.total_currency;
+    let source = match (
+        row.source_type.as_str(),
+        &row.schedule_id,
+        row.occurrence_date,
+        &row.email_message_id,
+    ) {
+        ("manual", ..) => Source::Manual,
+        ("schedule", Some(schedule_id), Some(occurrence_date), _) => Source::Schedule {
+            schedule_id: Uuid::parse_str(schedule_id)
+                .map_err(|_| corrupt("invalid schedule id"))?,
+            occurrence_date,
+        },
+        ("email", _, _, Some(message_id)) => Source::Email {
+            message_id: message_id.clone(),
+        },
+        (other, ..) => return Err(corrupt(&format!("invalid source {other}"))),
+    };
 
-    let total = Money::from_parts(&currency, &amount).map_err(|err| {
-        tracing::error!(%err, %amount, %currency, "failed to deserialize money type");
-        Error::Unexpected
-    })?;
-
-    let source = (match row.source_type.as_str() {
-        "manual" => Ok(Source::Manual),
-        "schedule" => {
-            let schedule_id = row.schedule_id.ok_or_else(|| {
-                tracing::error!(
-                    payment_id = %id,
-                    source_type = %row.source_type,
-                    "payment has schedule source type but schedule_id is missing"
-                );
-                Error::Unexpected
-            })?;
-            let schedule_id = Uuid::parse_str(&schedule_id).map_err(|err| {
-                tracing::error!(%err, payment_id = %id, "invalid schedule id uuid");
-                Error::Unexpected
-            })?;
-
-            let occurrence_date = row.occurrence_date.ok_or_else(|| {
-                tracing::error!(
-                    payment_id = %id,
-                    source_type = %row.source_type,
-                    "payment has schedule source type but occurence_date is missing"
-                );
-                Error::Unexpected
-            })?;
-
-            Ok(Source::Schedule {
-                schedule_id,
-                occurrence_date,
-            })
-        }
-
-        "email" => row.email_message_id.map(|message_id| Source::Email { message_id }).ok_or_else(|| {
-            tracing::error!(payment_id = %id, "payment has email source type but email_message_id is missing");
-            Error::Unexpected
-        }),
-
-        _ => {
-            tracing::error!(
-                payment_id = %id,
-                source_type = %row.source_type,
-                "unrecognized source type"
-            );
-            Err(Error::Unexpected)
-        }
-    })?;
-
-    let details = details_from_columns(&row.r#type, &row.details).map_err(|err| {
-        tracing::error!(%err, payment_id = %id, "invalid payment details");
-        Error::Unexpected
-    })?;
+    let details = details_from_columns(&row.r#type, &row.details)
+        .map_err(|err| corrupt(&format!("invalid details: {err}")))?;
 
     let state = match (row.status.as_str(), row.paid_at) {
         ("unpaid", _) => State::Unpaid,
         ("paid", Some(paid_at)) => State::Paid { paid_at },
-        (other, paid_at) => {
-            tracing::error!(payment_id = %id, status = other, ?paid_at, "unrecognized payment status");
-            return Err(Error::Unexpected);
-        }
+        (other, _) => return Err(corrupt(&format!("invalid status {other}"))),
     };
 
     let ack = match row.ack.as_str() {
         "pending" => Ack::Pending,
         "accepted" => Ack::Confirmed { value: true },
         "rejected" => Ack::Confirmed { value: false },
-        other => {
-            tracing::error!(payment_id = %id, ack = other, "unrecognized payment ack");
-            return Err(Error::Unexpected);
-        }
+        other => return Err(corrupt(&format!("invalid ack {other}"))),
     };
 
     Ok(Payment {

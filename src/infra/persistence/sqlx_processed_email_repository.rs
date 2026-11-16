@@ -4,7 +4,6 @@ use sqlx::{Row, SqlitePool};
 use time::OffsetDateTime;
 
 pub use super::Error;
-use super::unexpected;
 
 pub async fn finished(pool: &SqlitePool) -> Result<HashSet<String>, Error> {
     Ok(sqlx::query(
@@ -12,7 +11,7 @@ pub async fn finished(pool: &SqlitePool) -> Result<HashSet<String>, Error> {
     )
     .fetch_all(pool)
     .await
-    .map_err(unexpected)?
+    .map_err(Error::from)?
     .iter()
     .map(|row| row.get("message_id"))
     .collect())
@@ -38,7 +37,7 @@ pub async fn mark_processed(
     .bind(OffsetDateTime::now_utc())
     .execute(pool)
     .await
-    .map_err(unexpected)?;
+    .map_err(Error::from)?;
     Ok(())
 }
 
@@ -64,7 +63,7 @@ pub async fn record_failure(
     .bind(OffsetDateTime::now_utc())
     .fetch_one(pool)
     .await
-    .map_err(unexpected)?
+    .map_err(Error::from)?
     .get("attempts");
     Ok(u32::try_from(attempts).unwrap_or(u32::MAX))
 }

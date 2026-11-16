@@ -15,7 +15,7 @@ pub mod sqlx_payment_schedule_repository;
 pub mod sqlx_processed_email_repository;
 pub mod sqlx_settings_repository;
 
-#[derive(Debug, PartialEq, thiserror::Error)]
+#[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error("already exists")]
     AlreadyExists,
@@ -26,13 +26,11 @@ pub enum Error {
     #[error("updated concurrently")]
     ConcurrentUpdate,
 
-    #[error("unexpected persistence error")]
-    Unexpected,
-}
+    #[error("corrupt row: {0}")]
+    Corrupt(String),
 
-pub(crate) fn unexpected(sqlx_err: sqlx::Error) -> Error {
-    tracing::error!(%sqlx_err, "unexpected sqlx error");
-    Error::Unexpected
+    #[error(transparent)]
+    Unexpected(#[from] sqlx::Error),
 }
 
 // one connection avoids `SQLITE_BUSY` contention between writers.

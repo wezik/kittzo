@@ -3,13 +3,12 @@ use std::collections::HashMap;
 use sqlx::{Row, SqliteConnection, SqlitePool};
 
 pub use super::Error;
-use super::unexpected;
 
 pub async fn all(pool: &SqlitePool) -> Result<HashMap<String, String>, Error> {
     Ok(sqlx::query("SELECT key, value FROM settings")
         .fetch_all(pool)
         .await
-        .map_err(unexpected)?
+        .map_err(Error::from)?
         .iter()
         .map(|row| (row.get("key"), row.get("value")))
         .collect())
@@ -25,7 +24,7 @@ pub async fn set(conn: &mut SqliteConnection, key: &str, value: &str) -> Result<
     .execute(conn)
     .await
     .map(|_| ())
-    .map_err(unexpected)
+    .map_err(Error::from)
 }
 
 pub async fn delete(conn: &mut SqliteConnection, key: &str) -> Result<(), Error> {
@@ -34,5 +33,5 @@ pub async fn delete(conn: &mut SqliteConnection, key: &str) -> Result<(), Error>
         .execute(conn)
         .await
         .map(|_| ())
-        .map_err(unexpected)
+        .map_err(Error::from)
 }

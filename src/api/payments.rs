@@ -132,8 +132,10 @@ pub(super) fn map_err_to_response(err: app::payment::Error) -> Response {
         Error::Domain(payment::Error::InvalidTransition { .. }) | Error::ConcurrentUpdate => {
             (StatusCode::CONFLICT, err.to_string()).into_response()
         }
-        // NOTE: For now map those directly
-        Error::Persistence => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+        Error::Persistence(_) => {
+            tracing::error!(%err, "payment request failed");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
     }
 }
 

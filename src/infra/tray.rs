@@ -28,8 +28,9 @@ impl PendingAckWatch {
 
     pub async fn run(self) {
         loop {
-            if let Ok(pending) = self.payment_service.has_pending_ack().await {
-                self.pending_ack.store(pending, Ordering::Relaxed);
+            match self.payment_service.has_pending_ack().await {
+                Ok(pending) => self.pending_ack.store(pending, Ordering::Relaxed),
+                Err(err) => tracing::warn!(%err, "failed to check pending acks"),
             }
             tokio::time::sleep(PENDING_ACK_POLL).await;
         }
