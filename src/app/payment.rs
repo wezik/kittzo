@@ -81,7 +81,11 @@ impl Service {
         let mut imported = 0;
         for payment in &payments {
             match sqlx_payment_repository::create(&mut *tx, payment).await {
-                Ok(_) => imported += 1,
+                Ok(_) => {
+                    let event = payment::Event::Created { id: payment.id };
+                    sqlx_outbox_repository::create(&mut *tx, event).await?;
+                    imported += 1;
+                }
                 Err(persistence::Error::AlreadyExists) => {}
                 Err(err) => return Err(err.into()),
             }
@@ -122,10 +126,12 @@ mod tests {
     use super::*;
     use crate::domain::payment::{State, some_payment};
     use crate::infra::persistence::connect;
+    use time::SignedDuration;
 
     #[tokio::test]
     async fn import_keeps_state_and_skips_existing_ids() {
-        let service = Service::new(connect("sqlite::memory:").await.unwrap());
+        let pool = connect("sqlite::memory:").await.unwrap();
+        let service = Service::new(pool.clone());
         let existing = service
             .insert(some_payment(), payment::Event::Created { id: Uuid::nil() })
             .await
@@ -140,7 +146,17 @@ mod tests {
 
         assert_eq!(imported, 1);
         let stored = service.list(ListQuery::default()).await.unwrap();
-        assert_eq!(stored, vec![existing, paid]);
+        assert_eq!(stored, vec![existing, paid.clone()]);
         assert!(matches!(stored[1].state(), State::Paid { .. }));
+        let events = sqlx_outbox_repository::claim_batch(&pool, SignedDuration::ZERO, 10)
+            .await
+            .unwrap();
+        assert_eq!(
+            events
+                .into_iter()
+                .map(|e| e.aggregate_id)
+                .collect::<Vec<_>>(),
+            vec![Uuid::nil().to_string(), paid.id.to_string()]
+        );
     }
 }

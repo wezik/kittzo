@@ -96,7 +96,7 @@ where
     E: sqlx::Executor<'e, Database = Sqlite>,
 {
     Ok(
-        sqlx::query("SELECT * FROM payment_schedules ORDER BY created_at")
+        sqlx::query("SELECT * FROM payment_schedules ORDER BY created_at, rowid")
             .fetch_all(executor)
             .await
             .map_err(Error::from)?
@@ -110,16 +110,16 @@ pub async fn find_due<'e, E>(executor: E, today: Date) -> Result<Vec<PaymentSche
 where
     E: sqlx::Executor<'e, Database = Sqlite>,
 {
-    Ok(
-        sqlx::query("SELECT * FROM payment_schedules WHERE next_due_at <= ? ORDER BY created_at")
-            .bind(today)
-            .fetch_all(executor)
-            .await
-            .map_err(Error::from)?
-            .iter()
-            .filter_map(row_to_schedule)
-            .collect(),
+    Ok(sqlx::query(
+        "SELECT * FROM payment_schedules WHERE next_due_at <= ? ORDER BY created_at, rowid",
     )
+    .bind(today)
+    .fetch_all(executor)
+    .await
+    .map_err(Error::from)?
+    .iter()
+    .filter_map(row_to_schedule)
+    .collect())
 }
 
 pub async fn delete<'e, E>(executor: E, id: Uuid) -> Result<(), Error>

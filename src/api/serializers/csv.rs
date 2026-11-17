@@ -159,17 +159,18 @@ impl TryFrom<PaymentRow> for Payment {
             ("tax", None) => return Err("missing form_symbol".into()),
             (other, _) => return Err(format!("unknown type {other}").into()),
         };
-        let state = match (row.status.as_str(), row.paid_at) {
-            ("unpaid", _) => State::Unpaid,
-            ("paid", Some(paid_at)) => State::Paid { paid_at },
-            ("paid", None) => return Err("missing paid_at".into()),
-            (other, _) => return Err(format!("unknown status {other}").into()),
-        };
         let ack = match row.ack.as_str() {
             "pending" => Ack::Pending,
             "accepted" => Ack::Accepted,
             "rejected" => Ack::Rejected,
             other => return Err(format!("unknown ack {other}").into()),
+        };
+        let state = match (row.status.as_str(), row.paid_at) {
+            ("unpaid", _) => State::Unpaid,
+            ("paid", Some(paid_at)) if ack == Ack::Accepted => State::Paid { paid_at },
+            ("paid", Some(_)) => return Err("paid requires ack accepted".into()),
+            ("paid", None) => return Err("missing paid_at".into()),
+            (other, _) => return Err(format!("unknown status {other}").into()),
         };
         let source = match row.source.as_str() {
             "manual" => Source::Manual,
@@ -304,6 +305,17 @@ mod tests {
         let schedules = vec![some_schedule("Czynsz {MM}/{YYYY}", 31)];
 
         assert_eq!(round_trip::<ScheduleRow, _>(schedules.clone()), schedules);
+    }
+
+    #[test]
+    fn paid_but_not_accepted_is_rejected() {
+        let mut paid = some_payment();
+        paid.pay().unwrap();
+        let body = String::from_utf8(write([PaymentRow::from(paid)]).unwrap())
+            .unwrap()
+            .replace(",accepted,", ",pending,");
+
+        assert!(read::<PaymentRow, Payment>(body.as_bytes()).is_err());
     }
 
     #[test]

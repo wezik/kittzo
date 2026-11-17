@@ -105,11 +105,15 @@ impl Service {
 
     async fn process(&self, mut schedule: PaymentSchedule, today: Date) -> Result<usize, Error> {
         let produced = schedule.produce(today)?;
-        let count = produced.len();
+        let mut count = 0;
 
         let mut tx = start_tx(&self.pool).await?;
         for (payment, event) in produced {
-            sqlx_payment_repository::create(&mut *tx, &payment).await?;
+            match sqlx_payment_repository::create(&mut *tx, &payment).await {
+                Ok(_) => count += 1,
+                Err(persistence::Error::AlreadyExists) => continue,
+                Err(err) => return Err(err.into()),
+            }
             sqlx_outbox_repository::create(&mut *tx, event).await?;
         }
         sqlx_payment_schedule_repository::update(&mut tx, &schedule).await?;
@@ -245,5 +249,27 @@ mod tests {
 
         assert_eq!(imported, 1);
         assert_eq!(service.find_all().await.unwrap(), vec![existing, new]);
+    }
+
+    #[tokio::test]
+    async fn already_existing_occurrence_is_skipped_and_schedule_advances() {
+        let (service, pool) = setup().await;
+        let schedule = seed(&pool, today()).await;
+        let (existing, _) = payment::Payment::new(
+            schedule.total,
+            schedule.next_details.clone(),
+            Source::Schedule {
+                schedule_id: schedule.id,
+                occurrence_date: today(),
+            },
+        );
+        sqlx_payment_repository::create(&pool, &existing)
+            .await
+            .unwrap();
+
+        assert_eq!(service.process_due(today()).await.unwrap(), 0);
+
+        assert_eq!(payments(&pool).await, vec![existing]);
+        assert!(service.find_all().await.unwrap()[0].next_due_at > today());
     }
 }
