@@ -1,4 +1,5 @@
 use axum::Router;
+use axum::body::Bytes;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Json, Response};
@@ -7,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
+use crate::api::serializers::csv::{self, PaymentRow};
 use crate::api::serializers::details::DetailsDto;
 use crate::api::serializers::money::MoneyDto;
 use crate::app;
@@ -165,6 +167,7 @@ impl From<AckFilter> for ListQueryAckFilter {
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/payments", get(get_list).post(post_create))
+        .route("/payments/csv", get(get_csv).post(post_csv))
         .route("/payments/{id}/pay", post(post_pay))
         .route("/payments/{id}/ack", post(post_ack))
 }
@@ -214,6 +217,28 @@ async fn get_list(
                 .collect::<Vec<_>>(),
         )
         .into_response(),
+        Err(err) => map_err_to_response(&err),
+    }
+}
+
+async fn get_csv(State(state): State<AppState>) -> impl IntoResponse {
+    match state
+        .payment_service
+        .list(payment::ListQuery::default())
+        .await
+    {
+        Ok(payments) => csv::response("payments.csv", payments.into_iter().map(PaymentRow::from)),
+        Err(err) => map_err_to_response(&err),
+    }
+}
+
+async fn post_csv(State(state): State<AppState>, body: Bytes) -> impl IntoResponse {
+    let payments = match csv::read::<PaymentRow, Payment>(&body) {
+        Ok(payments) => payments,
+        Err(err) => return (StatusCode::UNPROCESSABLE_ENTITY, err).into_response(),
+    };
+    match state.payment_service.import(payments).await {
+        Ok(imported) => Json(serde_json::json!({ "imported": imported })).into_response(),
         Err(err) => map_err_to_response(&err),
     }
 }

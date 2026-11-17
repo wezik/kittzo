@@ -72,6 +72,20 @@ impl Service {
         Ok(sqlx_payment_schedule_repository::find_all(&self.pool).await?)
     }
 
+    pub async fn import(&self, schedules: Vec<PaymentSchedule>) -> Result<usize, Error> {
+        let mut tx = start_tx(&self.pool).await?;
+        let mut imported = 0;
+        for schedule in &schedules {
+            match sqlx_payment_schedule_repository::create(&mut *tx, schedule).await {
+                Ok(_) => imported += 1,
+                Err(persistence::Error::AlreadyExists) => {}
+                Err(err) => return Err(err.into()),
+            }
+        }
+        commit_tx(tx).await?;
+        Ok(imported)
+    }
+
     pub async fn delete(&self, id: Uuid) -> Result<(), Error> {
         Ok(sqlx_payment_schedule_repository::delete(&self.pool, id).await?)
     }
@@ -216,5 +230,20 @@ mod tests {
             err,
             Error::Payment(payment::Error::InvalidRecipient)
         ));
+    }
+
+    #[tokio::test]
+    async fn import_skips_existing_ids() {
+        let (service, pool) = setup().await;
+        let existing = seed(&pool, today()).await;
+        let new = some_schedule("foo", 5);
+
+        let imported = service
+            .import(vec![existing.clone(), new.clone()])
+            .await
+            .unwrap();
+
+        assert_eq!(imported, 1);
+        assert_eq!(service.find_all().await.unwrap(), vec![existing, new]);
     }
 }

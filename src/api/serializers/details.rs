@@ -20,7 +20,7 @@ enum DetailsRepr {
 }
 
 #[derive(Serialize, Deserialize)]
-enum TaxFormRepr {
+pub(super) enum TaxFormRepr {
     #[serde(rename = "VAT-7")]
     Vat7,
     #[serde(rename = "PPL")]
@@ -37,10 +37,7 @@ impl TryFrom<DetailsRepr> for DetailsDto {
                 account_number,
                 recipient,
             } => Details::standard(title, AccountNumber::try_from(account_number)?, recipient),
-            DetailsRepr::Tax { form_symbol } => Ok(Details::tax(match form_symbol {
-                TaxFormRepr::Vat7 => TaxForm::Vat7,
-                TaxFormRepr::Ppl => TaxForm::Ppl,
-            })),
+            DetailsRepr::Tax { form_symbol } => Ok(Details::tax(form_symbol.into())),
         }
         .map(DetailsDto)
     }
@@ -59,11 +56,26 @@ impl From<DetailsDto> for DetailsRepr {
                 recipient,
             },
             Details::Tax { form } => DetailsRepr::Tax {
-                form_symbol: match form {
-                    TaxForm::Vat7 => TaxFormRepr::Vat7,
-                    TaxForm::Ppl => TaxFormRepr::Ppl,
-                },
+                form_symbol: form.into(),
             },
+        }
+    }
+}
+
+impl From<TaxFormRepr> for TaxForm {
+    fn from(value: TaxFormRepr) -> Self {
+        match value {
+            TaxFormRepr::Vat7 => TaxForm::Vat7,
+            TaxFormRepr::Ppl => TaxForm::Ppl,
+        }
+    }
+}
+
+impl From<TaxForm> for TaxFormRepr {
+    fn from(value: TaxForm) -> Self {
+        match value {
+            TaxForm::Vat7 => TaxFormRepr::Vat7,
+            TaxForm::Ppl => TaxFormRepr::Ppl,
         }
     }
 }

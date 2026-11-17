@@ -33,6 +33,15 @@ fn next_title_from_template(template: &str, at: Date) -> String {
         .replace("{YYYY}", &at.year().to_string())
 }
 
+fn validate(recurrence: &Recurrence) -> Result<(), Error> {
+    match recurrence {
+        Recurrence::Monthly {
+            day_of_month: 1..=31,
+        } => Ok(()),
+        Recurrence::Monthly { .. } => Err(Error::InvalidDayOfMonth),
+    }
+}
+
 impl PaymentSchedule {
     pub fn new(
         total: Money,
@@ -42,24 +51,43 @@ impl PaymentSchedule {
         recurrence: Recurrence,
         starts_at: Date,
     ) -> Result<Self, Error> {
-        if !matches!(
-            recurrence,
-            Recurrence::Monthly {
-                day_of_month: 1..=31
-            }
-        ) {
-            return Err(Error::InvalidDayOfMonth);
-        }
-        let now = OffsetDateTime::now_utc();
+        validate(&recurrence)?;
         let next_due_at = recurrence.next_occurrence(starts_at.previous_day().unwrap_or(starts_at));
+        let now = OffsetDateTime::now_utc();
+        Self::restore(
+            Uuid::new_v4(),
+            now,
+            now,
+            total,
+            title_template,
+            account_number,
+            recipient,
+            recurrence,
+            next_due_at,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn restore(
+        id: Uuid,
+        created_at: OffsetDateTime,
+        updated_at: OffsetDateTime,
+        total: Money,
+        title_template: String,
+        account_number: AccountNumber,
+        recipient: String,
+        recurrence: Recurrence,
+        next_due_at: Date,
+    ) -> Result<Self, Error> {
+        validate(&recurrence)?;
         let next_title = next_title_from_template(&title_template, next_due_at);
         let next_details = Details::standard(next_title, account_number, recipient)?;
 
-        let schedule = PaymentSchedule {
-            id: Uuid::new_v4(),
+        Ok(PaymentSchedule {
+            id,
             version: Version::FIRST,
-            created_at: now,
-            updated_at: now,
+            created_at,
+            updated_at,
 
             total,
             title_template,
@@ -68,9 +96,7 @@ impl PaymentSchedule {
             next_details,
 
             recurrence,
-        };
-
-        Ok(schedule)
+        })
     }
 
     pub fn produce(&mut self, today: Date) -> Result<Vec<(Payment, payment::Event)>, Error> {

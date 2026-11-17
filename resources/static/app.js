@@ -340,6 +340,22 @@ document.querySelector(".tabs").addEventListener("click", (e) => {
   if (tab === "settings") loadSettings();
 });
 
+// CSV
+
+document.addEventListener("click", (e) => {
+  const exportButton = e.target.closest("button[data-export]");
+  if (exportButton) location.href = exportButton.dataset.export;
+  const importButton = e.target.closest("button[data-import]");
+  if (!importButton) return;
+  const input = Object.assign(document.createElement("input"), { type: "file", accept: ".csv,text/csv" });
+  input.addEventListener("change", async () => {
+    const res = await fetch(importButton.dataset.import, { method: "POST", body: input.files[0] });
+    alert(res.ok ? `Imported ${(await res.json()).imported}` : (await res.text()) || `Import failed with ${res.status}`);
+    refresh();
+  });
+  input.click();
+});
+
 // Refresh
 
 async function refresh() {

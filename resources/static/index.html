@@ -202,6 +202,8 @@
   td button { font-size: 10px; padding: 0.35em 0.7em; margin-left: 0.4em; }
   td.actions button { margin-left: 0; }
 
+  .csv-actions { display: flex; gap: 0.5em; }
+
   .table-scroll { overflow-x: auto; }
 
   table { width: 100%; border-collapse: collapse; }
@@ -289,6 +291,10 @@
     <section class="panel">
       <div class="panel-header">
         <h2>Payments</h2>
+        <div class="csv-actions">
+          <button type="button" data-export="/payments/csv">Export CSV</button>
+          <button type="button" data-import="/payments/csv">Import CSV</button>
+        </div>
       </div>
       <form id="payment-form" class="inline-form">
         <label>Kind<select name="type">
@@ -320,6 +326,10 @@
     <section class="panel">
       <div class="panel-header">
         <h2>Payment schedules</h2>
+        <div class="csv-actions">
+          <button type="button" data-export="/payment-schedules/csv">Export CSV</button>
+          <button type="button" data-import="/payment-schedules/csv">Import CSV</button>
+        </div>
       </div>
       <form id="schedule-form" class="inline-form">
         <label>Amount<input name="amount" inputmode="decimal" placeholder="19.99" required /></label>

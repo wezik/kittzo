@@ -76,6 +76,20 @@ impl Service {
         Ok(payment)
     }
 
+    pub async fn import(&self, payments: Vec<Payment>) -> Result<usize, Error> {
+        let mut tx = start_tx(&self.pool).await?;
+        let mut imported = 0;
+        for payment in &payments {
+            match sqlx_payment_repository::create(&mut *tx, payment).await {
+                Ok(_) => imported += 1,
+                Err(persistence::Error::AlreadyExists) => {}
+                Err(err) => return Err(err.into()),
+            }
+        }
+        commit_tx(tx).await?;
+        Ok(imported)
+    }
+
     pub async fn pay(&self, id: Uuid) -> Result<Payment, Error> {
         let mut payment = sqlx_payment_repository::find(&self.pool, id).await?;
         let event = payment.pay()?;
@@ -100,5 +114,33 @@ impl Service {
 
         commit_tx(tx).await?;
         Ok(payment)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::domain::payment::{State, some_payment};
+    use crate::infra::persistence::connect;
+
+    #[tokio::test]
+    async fn import_keeps_state_and_skips_existing_ids() {
+        let service = Service::new(connect("sqlite::memory:").await.unwrap());
+        let existing = service
+            .insert(some_payment(), payment::Event::Created { id: Uuid::nil() })
+            .await
+            .unwrap();
+        let mut paid = some_payment();
+        paid.pay().unwrap();
+
+        let imported = service
+            .import(vec![existing.clone(), paid.clone()])
+            .await
+            .unwrap();
+
+        assert_eq!(imported, 1);
+        let stored = service.list(ListQuery::default()).await.unwrap();
+        assert_eq!(stored, vec![existing, paid]);
+        assert!(matches!(stored[1].state(), State::Paid { .. }));
     }
 }
