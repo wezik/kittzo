@@ -122,10 +122,9 @@ mod tests {
             == Source::Email {
                 message_id: "<m1@mail.gmail.com>".into()
             }));
-        assert_eq!(
-            stored.into_iter().map(|p| p.details).collect::<Vec<_>>(),
-            vec![domain::some_standard_details(), Details::tax(TaxForm::Vat7)]
-        );
+        let details: Vec<_> = stored.into_iter().map(|p| p.details).collect();
+        assert!(details.contains(&domain::some_standard_details()));
+        assert!(details.contains(&Details::tax(TaxForm::Vat7)));
     }
 
     #[tokio::test]

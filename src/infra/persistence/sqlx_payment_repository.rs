@@ -48,6 +48,7 @@ where
     };
 
     let (kind, details) = details_columns(&payment.details);
+    let (status, paid_at) = state_columns(payment.state());
 
     let row = sqlx::query_as::<_, PaymentRow>(
         "
@@ -61,14 +62,15 @@ where
             type,
             details,
             status,
+            paid_at,
             source_type,
             schedule_id,
             occurrence_date,
             email_message_id,
             ack
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'unpaid', ?, ?, ?, ?, ?)
-        ON CONFLICT(id) DO NOTHING
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT DO NOTHING
         RETURNING *
         ",
     )
@@ -80,6 +82,8 @@ where
     .bind(payment.updated_at)
     .bind(kind)
     .bind(details)
+    .bind(status)
+    .bind(paid_at)
     .bind(source_name)
     .bind(schedule_id)
     .bind(occurrence_date)

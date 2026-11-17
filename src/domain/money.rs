@@ -13,6 +13,9 @@ pub enum Error {
     #[error("invalid amount: {0}")]
     InvalidAmount(#[from] rust_decimal::Error),
 
+    #[error("{0} is out of range")]
+    OutOfRange(Decimal),
+
     #[error("{amount} has more decimal places than {currency} allows")]
     TooPrecise { amount: Decimal, currency: String },
 }
@@ -31,6 +34,10 @@ impl Money {
             });
         }
         amount.rescale(currency.exponent);
+        let minor = amount * Decimal::from(10u64.pow(currency.exponent));
+        if minor.is_sign_negative() || minor.to_u32().is_none() {
+            return Err(Error::OutOfRange(amount));
+        }
         Ok(Money(RustyMoney::from_decimal(amount, currency)))
     }
 
@@ -106,6 +113,13 @@ mod tests {
     fn unknown_currency_and_unparsable_amount_are_rejected() {
         assert!(Money::from_parts("XYZ", "1.00").is_err());
         assert!(Money::from_parts("USD", "ten").is_err());
+    }
+
+    #[test]
+    fn amount_outside_u32_minor_units_is_rejected() {
+        assert!(Money::from_parts("PLN", "-5.00").is_err());
+        assert!(Money::from_parts("PLN", "50000000.00").is_err());
+        assert!(Money::from_parts("PLN", "42949672.95").is_ok());
     }
 
     #[test]

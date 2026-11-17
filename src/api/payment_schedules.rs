@@ -1,13 +1,15 @@
 use axum::Router;
+use axum::body::Bytes;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Json};
-use axum::routing::{delete, post};
+use axum::routing::{delete, get, post};
 use serde::{Deserialize, Serialize};
 use time::format_description::well_known::Iso8601;
 use time::{Date, OffsetDateTime};
 use uuid::Uuid;
 
+use crate::api::serializers::csv::{self, ScheduleRow};
 use crate::api::serializers::details::DetailsDto;
 use crate::api::serializers::money::MoneyDto;
 use crate::app::payment_schedule::Error;
@@ -19,6 +21,7 @@ use super::AppState;
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/payment-schedules", post(create).get(list))
+        .route("/payment-schedules/csv", get(get_csv).post(post_csv))
         .route("/payment-schedules/{id}", delete(remove))
 }
 
@@ -159,6 +162,33 @@ async fn remove(State(state): State<AppState>, Path(id): Path<Uuid>) -> impl Int
         Err(Error::NotFound) => StatusCode::NOT_FOUND.into_response(),
         Err(err) => {
             tracing::error!(%err, "failed to delete payment schedule");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+    }
+}
+
+async fn get_csv(State(state): State<AppState>) -> impl IntoResponse {
+    match state.schedule_service.find_all().await {
+        Ok(schedules) => csv::response(
+            "payment-schedules.csv",
+            schedules.into_iter().map(ScheduleRow::from),
+        ),
+        Err(err) => {
+            tracing::error!(%err, "failed to export payment schedules");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+    }
+}
+
+async fn post_csv(State(state): State<AppState>, body: Bytes) -> impl IntoResponse {
+    let schedules = match csv::read::<ScheduleRow, PaymentSchedule>(&body) {
+        Ok(schedules) => schedules,
+        Err(err) => return (StatusCode::UNPROCESSABLE_ENTITY, err).into_response(),
+    };
+    match state.schedule_service.import(schedules).await {
+        Ok(imported) => Json(serde_json::json!({ "imported": imported })).into_response(),
+        Err(err) => {
+            tracing::error!(%err, "failed to import payment schedules");
             StatusCode::INTERNAL_SERVER_ERROR.into_response()
         }
     }
