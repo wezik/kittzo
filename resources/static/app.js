@@ -349,12 +349,8 @@ document.addEventListener("click", (e) => {
   if (!importButton) return;
   const input = Object.assign(document.createElement("input"), { type: "file", accept: ".csv,text/csv" });
   input.addEventListener("change", async () => {
-    try {
-      const res = await fetch(importButton.dataset.import, { method: "POST", body: input.files[0] });
-      alert(res.ok ? `Imported ${(await res.json()).imported}` : (await res.text()) || `Import failed with ${res.status}`);
-    } catch (err) {
-      alert(`Import failed: ${err.message}`);
-    }
+    const res = await fetch(importButton.dataset.import, { method: "POST", body: input.files[0] });
+    alert(res.ok ? `Imported ${(await res.json()).imported}` : (await res.text()) || `Import failed with ${res.status}`);
     refresh();
   });
   input.click();

@@ -1,4 +1,3 @@
-use axum::extract::DefaultBodyLimit;
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use serde::de::DeserializeOwned;
@@ -14,10 +13,6 @@ use crate::domain::payment_schedule::{PaymentSchedule, Recurrence};
 use crate::domain::version::Version;
 
 type RowError = Box<dyn std::error::Error + Send + Sync>;
-
-pub fn body_limit() -> DefaultBodyLimit {
-    DefaultBodyLimit::max(50 * 1024 * 1024)
-}
 
 pub fn response<R: Serialize>(filename: &str, rows: impl IntoIterator<Item = R>) -> Response {
     match write(rows) {
