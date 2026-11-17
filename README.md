@@ -1,26 +1,28 @@
 # Kittzo
 
 > [!NOTE]
-> This README is a work in progress. It covers what Kittzo is and how to run it.
+> WIP readme. Covers what Kittzo is + how to run it.
 
-Kittzo is a single-user daemon that tracks payments. Non-manual payment entries require human confirmation before they can be processed. Kittzo never moves money by itself. Paying happens by hand or through local scripts using the Kittzo API.
+Single-user daemon for tracking payments. Lives in the tray. Never moves money itself. You pay by hand or via local scripts hitting the Kittzo API.
 
-There are a few points that are not settled yet and might change:
-- Confirmations are done through UI or Discord.
-- Payment entries are created by emails read by an LLM, schedules or manually.
+Non-manual payments need human confirmation before processing.
 
-Kittzo presents as a tray icon. The HTTP server listens on `127.0.0.1` only and has no auth. Don't expose it.
+Not settled yet, may change:
+- Confirmations via UI or Discord.
+- Payments created from emails (read by LLM), schedules, or by hand.
+
+HTTP server binds `127.0.0.1` only, no auth. Don't expose it.
 
 ## Stack
 
-- Rust 2024, with tokio and axum
+- Rust 2024, tokio, axum
 - SQLite via sqlx
 - LLMs via OpenRouter
-- a plain HTML and JS UI
+- plain HTML + JS UI
 
 ## Requirements
 
-On Linux the tray needs GTK headers:
+Linux tray needs GTK headers:
 
 ```sh
 sudo apt-get install -y libgtk-3-dev libxdo-dev libayatana-appindicator3-dev
@@ -32,32 +34,32 @@ Install [mise](https://mise.jdx.dev/), then:
 
 ```sh
 mise install
-cp .env.example .env   # fill in the values you need
+cp .env.example .env   # fill what you need
 mise run dev
 ```
 
-The UI is at http://127.0.0.1:7878. The tray's "Open UI" item opens it too.
+UI at http://127.0.0.1:7878, or tray > "Open UI".
 
-Integrations (Discord, email, OpenRouter) are set up in the UI's Settings tab. Secrets go to the OS keyring, everything else to the database. Changes apply on restart. An integration with missing settings stays off, and the startup log says which settings are missing. On Linux the keyring needs a Secret Service provider, such as GNOME Keyring.
+Config:
+- Integrations (Discord, email, OpenRouter) set up in UI Settings tab. Applies on restart.
+- Secrets go to OS keyring, rest to DB. Linux keyring needs a Secret Service provider, e.g. GNOME Keyring.
+- Missing settings = integration stays off. Startup log says what's missing.
+- `kittzo.toml` = safe defaults only (poll intervals, OpenRouter model).
+- Env vars from `.env.example` override matching setting. UI shows that setting locked. Meant for dev.
+- `RUST_LOG` sets log filter.
 
-`kittzo.toml` holds safe defaults only, such as poll intervals and the OpenRouter model.
-
-Env vars from `.env.example` override the matching setting, which the UI then shows as locked. Use them for dev.
-
-Kittzo looks for its files (`kittzo.toml`, `kittzo.db`, `resources/static/`, `scripts/`) in its home dir: `KITTZO_HOME` if set, else the directory holding the executable. `mise run dev` sets `KITTZO_HOME` to the repo root, so each worktree runs with its own config and database.
-
-`RUST_LOG` sets the log filter.
+Home dir holds `kittzo.toml`, `kittzo.db`, `resources/static/`, `scripts/`. It's `KITTZO_HOME` if set, else exe's dir. `mise run dev` points it at repo root, so each worktree gets own config + DB.
 
 ## Tasks
 
-All tasks live in `mise.toml`.
+All in `mise.toml`.
 
-| Command | What it does |
+| Command | Does |
 | --- | --- |
-| `mise run check` | Checks that `.env` has every key from `.env.example` |
-| `mise run dev` | Runs `check`, then starts Kittzo |
-| `mise run test` | Runs the tests |
-| `mise run format` | Formats the code |
+| `mise run check` | check `.env` has every key from `.env.example` |
+| `mise run dev` | run `check`, then start Kittzo |
+| `mise run test` | run tests |
+| `mise run format` | format code |
 
 ## Building
 
@@ -65,11 +67,11 @@ All tasks live in `mise.toml`.
 cargo build --release --locked
 ```
 
-The binary does not embed the UI. Ship `resources/static/` next to it.
+UI not embedded in binary. Ship `resources/static/` next to it.
 
-## Creating a release
+## Releasing
 
-CI builds releases. Push a `v*` tag and `.github/workflows/release.yml` publishes a GitHub release with Windows and Linux archives.
+Push a `v*` tag. CI (`.github/workflows/release.yml`) publishes GitHub release with Windows + Linux archives.
 
 ```sh
 git tag v0.2.0
@@ -78,41 +80,40 @@ git push origin v0.2.0
 
 ## Versioning
 
-Kittzo follows [semantic versioning](https://semver.org/).
+Follows [semver](https://semver.org/).
 
-Before 1.0.0, any minor release can break the API, the config or the database. Back up `kittzo.db` before upgrading. Copy its `-wal` and `-shm` files too.
+Pre-1.0, any minor can break API, config or DB. Back up `kittzo.db`, `kittzo.db-wal`, `kittzo.db-shm` before upgrading.
 
-From 1.0.0 on, breaking any of those needs a major release. Schema changes go in new migrations. Old migrations stay untouched.
+From 1.0 on, breaking those = major bump. Schema changes go in new migrations, old ones never touched.
 
 ## Architecture
 
 ```
 src/
-  domain/  types and business rules, no IO
-  app/     services and background jobs
-  infra/   adapters for the database, Discord, email, config and the tray
+  domain/  types + business rules, no IO
+  app/     services, background jobs
+  infra/   adapters: DB, Discord, email, config, tray
   api/     HTTP routes
-  main.rs  wires everything together
+  main.rs  wiring
 ```
 
-`domain/` does not depend on any other layer.
-
-Routes stay thin. They parse the request, call a service and map the result. Unit tests cover mainly `domain/` and `app/`.
+- `domain/` depends on nothing else.
+- Routes stay thin. Parse request, call service, map result.
+- Unit tests mainly cover `domain/` + `app/`.
 
 ## Scripts
 
 > [!WARNING]
-> Work in progress. Releases don't include this feature yet.
+> WIP. Not in releases yet.
 
-`scripts/` holds local Python scripts that process confirmed payments. A script can drive a bank's website, for example. The folder is gitignored. It encodes how the user pays and can hold a logged-in browser session.
+`scripts/` = local Python scripts that process confirmed payments, e.g. one driving a bank's website. Gitignored, since it encodes how you pay and may hold a logged-in browser session.
 
-- `scripts/run.py` is the entry point. It lists the scripts and runs the one you pick.
-- The tray's "Run payment script" item runs it with `scripts/.venv`.
-- Scripts talk to Kittzo over the HTTP API, never the database.
+- `scripts/run.py` is entry point. Lists scripts, runs the one you pick.
+- Tray > "Run payment script" runs it with `scripts/.venv`.
+- Scripts use HTTP API only, never touch DB.
 
-Recommended rules for a script that touches money:
-
-- Validate a payment before acting on it. Skip it if anything looks wrong.
-- Mark a payment paid only after it's externally confirmed. If unsure, leave it unpaid and check by hand.
-- Keep credentials in the OS keyring.
-- Support a dry run that stops before the final submit.
+Recommended rules for scripts touching money:
+- Validate payment before acting. Anything off, skip.
+- Mark paid only after external confirmation. Unsure? Leave unpaid, check by hand.
+- Creds in OS keyring.
+- Support dry run that stops before final submit.
