@@ -21,7 +21,10 @@ use super::AppState;
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/payment-schedules", post(create).get(list))
-        .route("/payment-schedules/csv", get(get_csv).post(post_csv))
+        .route(
+            "/payment-schedules/csv",
+            get(get_csv).post(post_csv).layer(csv::body_limit()),
+        )
         .route("/payment-schedules/{id}", delete(remove))
 }
 

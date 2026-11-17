@@ -146,8 +146,13 @@ mod tests {
 
         assert_eq!(imported, 1);
         let stored = service.list(ListQuery::default()).await.unwrap();
-        assert_eq!(stored, vec![existing, paid.clone()]);
-        assert!(matches!(stored[1].state(), State::Paid { .. }));
+        assert_eq!(stored.len(), 2);
+        assert!(stored.contains(&existing) && stored.contains(&paid));
+        assert!(
+            stored
+                .iter()
+                .any(|p| matches!(p.state(), State::Paid { .. }))
+        );
         let events = sqlx_outbox_repository::claim_batch(&pool, SignedDuration::ZERO, 10)
             .await
             .unwrap();

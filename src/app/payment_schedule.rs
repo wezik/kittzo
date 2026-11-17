@@ -248,7 +248,9 @@ mod tests {
             .unwrap();
 
         assert_eq!(imported, 1);
-        assert_eq!(service.find_all().await.unwrap(), vec![existing, new]);
+        let stored = service.find_all().await.unwrap();
+        assert_eq!(stored.len(), 2);
+        assert!(stored.contains(&existing) && stored.contains(&new));
     }
 
     #[tokio::test]

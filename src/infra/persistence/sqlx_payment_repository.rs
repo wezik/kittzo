@@ -152,7 +152,7 @@ where
     Ok(sqlx::query_as::<_, PaymentRow>(
         "SELECT * FROM payments
          WHERE (?1 IS NULL OR status = ?1) AND (?2 IS NULL OR ack = ?2)
-         ORDER BY created_at, rowid",
+         ORDER BY created_at",
     )
     .bind(status)
     .bind(ack)

@@ -167,7 +167,10 @@ impl From<AckFilter> for ListQueryAckFilter {
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/payments", get(get_list).post(post_create))
-        .route("/payments/csv", get(get_csv).post(post_csv))
+        .route(
+            "/payments/csv",
+            get(get_csv).post(post_csv).layer(csv::body_limit()),
+        )
         .route("/payments/{id}/pay", post(post_pay))
         .route("/payments/{id}/ack", post(post_ack))
 }
