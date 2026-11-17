@@ -29,8 +29,10 @@ impl Details {
 #[derive(Clone, Debug, PartialEq)]
 pub struct AccountNumber(String);
 
-impl AccountNumber {
-    pub fn from(raw: String) -> Result<Self, Error> {
+impl TryFrom<String> for AccountNumber {
+    type Error = Error;
+
+    fn try_from(raw: String) -> Result<Self, Error> {
         let digits: String = raw.chars().filter(|c| !c.is_whitespace()).collect();
         if digits.len() != 26 || !digits.chars().all(|c| c.is_ascii_digit()) {
             return Err(Error::InvalidAccountNumber);
@@ -44,7 +46,9 @@ impl AccountNumber {
 
         Ok(AccountNumber(digits))
     }
+}
 
+impl AccountNumber {
     pub fn as_str(&self) -> &str {
         &self.0
     }
@@ -67,9 +71,9 @@ impl Details {
         }
 
         Ok(Details::Standard {
-            title: title,
-            account_number: account_number,
-            recipient: recipient,
+            title,
+            account_number,
+            recipient,
         })
     }
 
@@ -82,7 +86,8 @@ impl Details {
 pub fn some_standard_details() -> Details {
     Details::standard(
         "foo".into(),
-        AccountNumber::from("61109010140000071219812874".into()).expect("valid account number"),
+        AccountNumber::try_from("61109010140000071219812874".to_string())
+            .expect("valid account number"),
         "someone".into(),
     )
     .expect("valid details")
@@ -96,7 +101,6 @@ mod tests {
 
     #[test]
     fn raw_account_number_is_normalized() {
-        // given
         let cases = vec![
             "61 1090 1014 0000 0712 1981 2874",
             "61109010140000 0712 1981 2874",
@@ -104,25 +108,21 @@ mod tests {
 
         let expected = "61109010140000071219812874";
 
-        // when
         for case in cases {
-            let result = AccountNumber::from(case.into()).expect("valid account number");
+            let result = AccountNumber::try_from(case.to_string()).expect("valid account number");
 
-            // then
             assert_eq!(result.as_str(), expected);
         }
     }
 
     #[test]
     fn invalid_account_number_is_rejected() {
-        // given
         let cases = vec!["61109010140000071212874", "611090101400000712198128741"];
 
-        // when
         for case in cases {
-            let result = AccountNumber::from(case.into()).expect_err("invalid account number");
+            let result =
+                AccountNumber::try_from(case.to_string()).expect_err("invalid account number");
 
-            // then
             assert_matches!(result, Error::InvalidAccountNumber);
         }
     }

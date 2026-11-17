@@ -55,10 +55,9 @@ mod tests {
     use super::*;
     use crate::domain::email::ParsingResult;
     use crate::domain::money::some_money;
-    use crate::domain::payment::{self as domain, Details, Payment, Source, TaxForm};
+    use crate::domain::payment::{self as domain, Details, ListQuery, Payment, Source, TaxForm};
     use crate::infra::persistence::connect;
     use async_trait::async_trait;
-    use uuid::Uuid;
 
     struct FakeParser(Result<Vec<Result<Details, domain::Error>>, email::Error>);
 
@@ -88,7 +87,6 @@ mod tests {
 
     fn email() -> Email {
         Email {
-            id: Uuid::new_v4(),
             external_id: "<m1@mail.gmail.com>".into(),
             from: "ksiegowa@biuro.pl".into(),
             subject: "Rozliczenie 09/2026".into(),
@@ -119,7 +117,7 @@ mod tests {
         let created = service.process(&email()).await.unwrap();
 
         assert_eq!(created, 2);
-        let stored = payments.list(None).await.unwrap();
+        let stored = payments.list(ListQuery::default()).await.unwrap();
         assert!(stored.iter().all(|payment| payment.source
             == Source::Email {
                 message_id: "<m1@mail.gmail.com>".into()
@@ -135,7 +133,13 @@ mod tests {
         let (service, payments) = service(Ok(vec![])).await;
 
         assert_eq!(service.process(&email()).await.unwrap(), 0);
-        assert!(payments.list(None).await.unwrap().is_empty());
+        assert!(
+            payments
+                .list(ListQuery::default())
+                .await
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[tokio::test]

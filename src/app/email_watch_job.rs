@@ -1,16 +1,15 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use async_trait::async_trait;
 use sqlx::SqlitePool;
 
-use crate::app::startup_task::StartupTask;
 use crate::infra::persistence::sqlx_processed_email_repository as processed;
 
 use crate::app::email::Service;
 use crate::domain::email::Mailbox;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Deserialize)]
+#[serde(default)]
 pub struct EmailWatchConfig {
     pub poll_interval_secs: u64,
     pub max_attempts: u32,
@@ -108,15 +107,8 @@ impl EmailWatchJob {
             }
         }
     }
-}
 
-#[async_trait]
-impl StartupTask for EmailWatchJob {
-    fn name(&self) -> &str {
-        "email-watch-job"
-    }
-
-    async fn run(&self) {
+    pub async fn run(self) {
         loop {
             self.process().await;
             tokio::time::sleep(Duration::from_secs(self.config.poll_interval_secs)).await;
@@ -134,9 +126,9 @@ mod tests {
     use crate::app::payment;
     use crate::domain::email::{self, Email, MailboxError, Parser, ParsingResult};
     use crate::domain::money::some_money;
-    use crate::domain::payment::{Payment, Source, some_standard_details};
+    use crate::domain::payment::{ListQuery, Payment, Source, some_standard_details};
     use crate::infra::persistence::connect;
-    use uuid::Uuid;
+    use async_trait::async_trait;
 
     struct FakeMailbox(Vec<Email>);
 
@@ -179,7 +171,6 @@ mod tests {
 
     fn email(id: &str) -> Email {
         Email {
-            id: Uuid::new_v4(),
             external_id: id.into(),
             from: "a@x.pl".into(),
             subject: "Faktura".into(),
@@ -216,7 +207,7 @@ mod tests {
         job.process().await;
 
         assert_eq!(parser.calls.load(Ordering::SeqCst), 2);
-        assert_eq!(payments.list(None).await.unwrap().len(), 2);
+        assert_eq!(payments.list(ListQuery::default()).await.unwrap().len(), 2);
     }
 
     #[tokio::test]
@@ -228,7 +219,13 @@ mod tests {
         }
 
         assert_eq!(parser.calls.load(Ordering::SeqCst), 3);
-        assert!(payments.list(None).await.unwrap().is_empty());
+        assert!(
+            payments
+                .list(ListQuery::default())
+                .await
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[tokio::test]
@@ -241,6 +238,6 @@ mod tests {
         job.process().await;
 
         assert_eq!(parser.calls.load(Ordering::SeqCst), 2);
-        assert_eq!(payments.list(None).await.unwrap().len(), 1);
+        assert_eq!(payments.list(ListQuery::default()).await.unwrap().len(), 1);
     }
 }

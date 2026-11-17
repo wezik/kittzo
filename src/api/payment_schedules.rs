@@ -10,12 +10,11 @@ use uuid::Uuid;
 
 use crate::api::serializers::details::DetailsDto;
 use crate::api::serializers::money::MoneyDto;
-use crate::app::payment_schedule::PaymentScheduleError;
+use crate::app::payment_schedule::Error;
 use crate::domain::payment::AccountNumber;
 use crate::domain::payment_schedule::{PaymentSchedule, Recurrence};
 
 use super::AppState;
-use super::serializers::rfc3339::OffsetDateTimeDto;
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -51,8 +50,10 @@ impl From<RecurrenceRequest> for Recurrence {
 struct PaymentScheduleResponse {
     id: Uuid,
     version: u32,
-    created_at: OffsetDateTimeDto,
-    updated_at: OffsetDateTimeDto,
+    #[serde(with = "time::serde::rfc3339")]
+    created_at: OffsetDateTime,
+    #[serde(with = "time::serde::rfc3339")]
+    updated_at: OffsetDateTime,
     total: MoneyDto,
     title_template: String,
     recurrence: RecurrenceResponse,
@@ -80,8 +81,8 @@ impl From<PaymentSchedule> for PaymentScheduleResponse {
         PaymentScheduleResponse {
             id: schedule.id,
             version: schedule.version.into(),
-            created_at: schedule.created_at.into(),
-            updated_at: schedule.updated_at.into(),
+            created_at: schedule.created_at,
+            updated_at: schedule.updated_at,
             total: schedule.total.into(),
             title_template: schedule.title_template,
             recurrence: schedule.recurrence.into(),
@@ -95,7 +96,7 @@ async fn create(
     State(state): State<AppState>,
     Json(body): Json<CreateScheduleRequest>,
 ) -> impl IntoResponse {
-    let account_number = match AccountNumber::from(body.account_number) {
+    let account_number = match AccountNumber::try_from(body.account_number) {
         Ok(number) => number,
         Err(err) => return (StatusCode::UNPROCESSABLE_ENTITY, err.to_string()).into_response(),
     };
@@ -125,8 +126,8 @@ async fn create(
             Json(PaymentScheduleResponse::from(created)),
         )
             .into_response(),
-        Err(PaymentScheduleError::AlreadyExists) => StatusCode::CONFLICT.into_response(),
-        Err(PaymentScheduleError::Payment(err)) => {
+        Err(Error::AlreadyExists) => StatusCode::CONFLICT.into_response(),
+        Err(Error::Payment(err)) => {
             (StatusCode::UNPROCESSABLE_ENTITY, err.to_string()).into_response()
         }
         Err(err) => {
@@ -155,7 +156,7 @@ async fn list(State(state): State<AppState>) -> impl IntoResponse {
 async fn remove(State(state): State<AppState>, Path(id): Path<Uuid>) -> impl IntoResponse {
     match state.schedule_service.delete(id).await {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
-        Err(PaymentScheduleError::NotFound) => StatusCode::NOT_FOUND.into_response(),
+        Err(Error::NotFound) => StatusCode::NOT_FOUND.into_response(),
         Err(err) => {
             tracing::error!(%err, "failed to delete payment schedule");
             StatusCode::INTERNAL_SERVER_ERROR.into_response()

@@ -4,7 +4,6 @@ use sqlx::{Row, SqlitePool};
 use time::OffsetDateTime;
 
 pub use super::Error;
-use super::unexpected;
 
 pub async fn finished(pool: &SqlitePool) -> Result<HashSet<String>, Error> {
     Ok(sqlx::query(
@@ -12,7 +11,7 @@ pub async fn finished(pool: &SqlitePool) -> Result<HashSet<String>, Error> {
     )
     .fetch_all(pool)
     .await
-    .map_err(unexpected)?
+    .map_err(Error::from)?
     .iter()
     .map(|row| row.get("message_id"))
     .collect())
@@ -34,11 +33,11 @@ pub async fn mark_processed(
              updated_at = excluded.updated_at",
     )
     .bind(message_id)
-    .bind(payments_created as i64)
+    .bind(i64::try_from(payments_created).unwrap_or(i64::MAX))
     .bind(OffsetDateTime::now_utc())
     .execute(pool)
     .await
-    .map_err(unexpected)?;
+    .map_err(Error::from)?;
     Ok(())
 }
 
@@ -59,14 +58,14 @@ pub async fn record_failure(
          RETURNING attempts",
     )
     .bind(message_id)
-    .bind(max_attempts as i64)
+    .bind(i64::from(max_attempts))
     .bind(error)
     .bind(OffsetDateTime::now_utc())
     .fetch_one(pool)
     .await
-    .map_err(unexpected)?
+    .map_err(Error::from)?
     .get("attempts");
-    Ok(attempts as u32)
+    Ok(u32::try_from(attempts).unwrap_or(u32::MAX))
 }
 
 #[cfg(test)]

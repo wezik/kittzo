@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::domain::payment::{AccountNumber, Details, TaxForm};
+use crate::domain::payment::{self, AccountNumber, Details, TaxForm};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(try_from = "DetailsRepr", into = "DetailsRepr")]
@@ -28,7 +28,7 @@ enum TaxFormRepr {
 }
 
 impl TryFrom<DetailsRepr> for DetailsDto {
-    type Error = String;
+    type Error = payment::Error;
 
     fn try_from(repr: DetailsRepr) -> Result<Self, Self::Error> {
         match repr {
@@ -36,10 +36,7 @@ impl TryFrom<DetailsRepr> for DetailsDto {
                 title,
                 account_number,
                 recipient,
-            } => {
-                let number = AccountNumber::from(account_number).map_err(|err| err.to_string())?;
-                Details::standard(title, number, recipient).map_err(|err| err.to_string())
-            }
+            } => Details::standard(title, AccountNumber::try_from(account_number)?, recipient),
             DetailsRepr::Tax { form_symbol } => Ok(Details::tax(match form_symbol {
                 TaxFormRepr::Vat7 => TaxForm::Vat7,
                 TaxFormRepr::Ppl => TaxForm::Ppl,

@@ -2,15 +2,12 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use async_trait::async_trait;
-
 use tao::event::{Event, StartCause};
 use tao::event_loop::{ControlFlow, EventLoopBuilder};
 use tray_icon::menu::{Menu, MenuEvent, MenuItem};
 use tray_icon::{Icon, TrayIcon, TrayIconBuilder};
 
 use crate::app::payment;
-use crate::app::startup_task::StartupTask;
 
 const ICON_BYTES: &[u8] = include_bytes!("../../resources/icons/kittzo2_32.png");
 const BELL_ICON_BYTES: &[u8] = include_bytes!("../../resources/icons/kittzo2_bell_32.png");
@@ -28,25 +25,19 @@ impl PendingAckWatch {
             pending_ack,
         }
     }
-}
 
-#[async_trait]
-impl StartupTask for PendingAckWatch {
-    fn name(&self) -> &str {
-        "pending-ack-watch"
-    }
-
-    async fn run(&self) {
+    pub async fn run(self) {
         loop {
-            if let Ok(pending) = self.payment_service.has_pending_ack().await {
-                self.pending_ack.store(pending, Ordering::Relaxed);
+            match self.payment_service.has_pending_ack().await {
+                Ok(pending) => self.pending_ack.store(pending, Ordering::Relaxed),
+                Err(err) => tracing::warn!(%err, "failed to check pending acks"),
             }
             tokio::time::sleep(PENDING_ACK_POLL).await;
         }
     }
 }
 
-pub fn spawn(server_port: u16, paused: Arc<AtomicBool>, pending_ack: Arc<AtomicBool>) -> ! {
+pub fn spawn(server_port: u16, pending_ack: Arc<AtomicBool>) -> ! {
     let event_loop = EventLoopBuilder::<MenuEvent>::with_user_event().build();
 
     let proxy = event_loop.create_proxy();
@@ -62,9 +53,8 @@ pub fn spawn(server_port: u16, paused: Arc<AtomicBool>, pending_ack: Arc<AtomicB
         cfg!(target_os = "windows"),
         None,
     );
-    let pause_resume = MenuItem::with_id("pause-resume", "Pause", true, None);
     let quit = MenuItem::with_id("quit", "Quit", true, None);
-    menu.append_items(&[&open_ui, &pay, &pause_resume, &quit])
+    menu.append_items(&[&open_ui, &pay, &quit])
         .expect("failed to build tray menu");
 
     let mut icon = Some(load_icon(ICON_BYTES));
@@ -99,11 +89,6 @@ pub fn spawn(server_port: u16, paused: Arc<AtomicBool>, pending_ack: Arc<AtomicB
             }
             Event::UserEvent(event) if event.id == "pay" => {
                 open_payment_scripts();
-            }
-            Event::UserEvent(event) if event.id == "pause-resume" => {
-                let now_paused = !paused.load(Ordering::SeqCst);
-                paused.store(now_paused, Ordering::SeqCst);
-                pause_resume.set_text(if now_paused { "Resume" } else { "Pause" });
             }
             Event::UserEvent(event) if event.id == "quit" => {
                 tray_icon.take();

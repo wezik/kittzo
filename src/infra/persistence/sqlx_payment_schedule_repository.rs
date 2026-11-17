@@ -1,13 +1,13 @@
 use sqlx::{Row, Sqlite, SqliteConnection, sqlite::SqliteRow};
-use time::{Date, OffsetDateTime};
+use time::Date;
 use uuid::Uuid;
 
 use crate::domain::payment::Details;
 use crate::domain::payment_schedule::{PaymentSchedule, Recurrence};
 use crate::domain::version::Version;
-use crate::infra::persistence::{Error, unexpected};
+use crate::infra::persistence::Error;
 
-use super::{details_columns, details_from_columns, total_from_row};
+use super::{details_columns, details_from_columns, total_from_row, update_conflict};
 
 pub async fn create<'e, E>(
     executor: E,
@@ -33,11 +33,11 @@ where
     .bind(kind)
     .bind(&details)
     .bind(recurrence_type(&schedule.recurrence))
-    .bind(day_of_month(&schedule.recurrence) as i64)
+    .bind(i64::from(day_of_month(&schedule.recurrence)))
     .bind(schedule.next_due_at)
     .execute(executor)
     .await
-    .map_err(unexpected)?;
+    .map_err(Error::from)?;
 
     if result.rows_affected() == 0 {
         return Err(Error::AlreadyExists);
@@ -67,27 +67,21 @@ pub async fn update(
     .bind(kind)
     .bind(&details)
     .bind(recurrence_type(&schedule.recurrence))
-    .bind(day_of_month(&schedule.recurrence) as i64)
+    .bind(i64::from(day_of_month(&schedule.recurrence)))
     .bind(schedule.next_due_at)
     .bind(schedule.id.to_string())
     .bind(i64::from(schedule.version))
     .execute(&mut *conn)
     .await
-    .map_err(unexpected)?;
+    .map_err(Error::from)?;
 
     if result.rows_affected() == 0 {
-        let exists = sqlx::query("SELECT 1 FROM payment_schedules WHERE id = ?")
-            .bind(schedule.id.to_string())
-            .fetch_optional(&mut *conn)
-            .await
-            .map_err(unexpected)?
-            .is_some();
-
-        return Err(if exists {
-            Error::ConcurrentUpdate
-        } else {
-            Error::NotFound
-        });
+        return Err(update_conflict(
+            conn,
+            "SELECT 1 FROM payment_schedules WHERE id = ?",
+            schedule.id,
+        )
+        .await);
     }
 
     tracing::info!(schedule_id = %schedule.id, "updated payment schedule");
@@ -105,7 +99,7 @@ where
         sqlx::query("SELECT * FROM payment_schedules ORDER BY created_at")
             .fetch_all(executor)
             .await
-            .map_err(unexpected)?
+            .map_err(Error::from)?
             .iter()
             .filter_map(row_to_schedule)
             .collect(),
@@ -121,7 +115,7 @@ where
             .bind(today)
             .fetch_all(executor)
             .await
-            .map_err(unexpected)?
+            .map_err(Error::from)?
             .iter()
             .filter_map(row_to_schedule)
             .collect(),
@@ -136,7 +130,7 @@ where
         .bind(id.to_string())
         .execute(executor)
         .await
-        .map_err(unexpected)?;
+        .map_err(Error::from)?;
     if result.rows_affected() == 0 {
         return Err(Error::NotFound);
     }
@@ -157,41 +151,48 @@ fn day_of_month(recurrence: &Recurrence) -> u8 {
 }
 
 fn row_to_schedule(row: &SqliteRow) -> Option<PaymentSchedule> {
-    let id: String = row.get("id");
-    let version: i64 = row.get("version");
-    let created_at: OffsetDateTime = row.get("created_at");
-    let updated_at: OffsetDateTime = row.get("updated_at");
+    let raw_id: String = row.get("id");
+    let skip =
+        |reason: &str| tracing::error!(id = %raw_id, reason, "skipping unusable schedule row");
+    let Ok(id) = Uuid::parse_str(&raw_id) else {
+        skip("invalid id");
+        return None;
+    };
+    let Ok(version) = Version::try_from(row.get::<i64, _>("version")) else {
+        skip("invalid version");
+        return None;
+    };
     let total = total_from_row(row)?;
-    let title_template: String = row.get("title_template");
-    let recurrence_type: String = row.get("recurrence_type");
-    let day_of_month: i64 = row.get("day_of_month");
-    let next_due_at: Date = row.get("next_due_at");
-    let details: String = row.get("details");
-
     let kind: String = row.get("type");
+    let details: String = row.get("details");
     let next_details = details_from_columns(&kind, &details)
         .inspect_err(|err| tracing::error!(%err, %id, "skipping schedule with unusable details"))
         .ok()?;
     if !matches!(next_details, Details::Standard { .. }) {
-        tracing::error!(%id, "skipping schedule with non-standard details");
+        skip("non-standard details");
         return None;
     }
 
-    let recurrence = match recurrence_type.as_str() {
-        "monthly" => Recurrence::Monthly {
-            day_of_month: day_of_month as u8,
-        },
-        other => panic!("unknown recurrence_type in db: {other}"),
+    let recurrence_type: String = row.get("recurrence_type");
+    let recurrence = match (
+        recurrence_type.as_str(),
+        u8::try_from(row.get::<i64, _>("day_of_month")),
+    ) {
+        ("monthly", Ok(day_of_month @ 1..=31)) => Recurrence::Monthly { day_of_month },
+        _ => {
+            skip("invalid recurrence");
+            return None;
+        }
     };
 
     Some(PaymentSchedule {
-        id: Uuid::parse_str(&id).expect("invalid payment schedule id uuid"),
-        version: Version::from(version),
-        created_at,
-        updated_at,
+        id,
+        version,
+        created_at: row.get("created_at"),
+        updated_at: row.get("updated_at"),
         total,
-        title_template,
-        next_due_at,
+        title_template: row.get("title_template"),
+        next_due_at: row.get("next_due_at"),
         next_details,
         recurrence,
     })
@@ -203,6 +204,7 @@ mod tests {
     use crate::domain::payment_schedule::some_schedule;
     use crate::infra::persistence::connect;
     use sqlx::SqlitePool;
+    use time::OffsetDateTime;
 
     async fn pool() -> SqlitePool {
         connect("sqlite::memory:").await.unwrap()

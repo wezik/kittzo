@@ -1,14 +1,12 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use async_trait::async_trait;
 use time::OffsetDateTime;
 
-use crate::app::startup_task::StartupTask;
+use crate::app::payment_schedule;
 
-use crate::app::payment_schedule::PaymentScheduleService;
-
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Deserialize)]
+#[serde(default)]
 pub struct PaymentScheduleJobConfig {
     pub poll_interval_secs: u64,
 }
@@ -16,7 +14,7 @@ pub struct PaymentScheduleJobConfig {
 impl Default for PaymentScheduleJobConfig {
     fn default() -> Self {
         Self {
-            poll_interval_secs: 1800,
+            poll_interval_secs: 3600,
         }
     }
 }
@@ -28,13 +26,13 @@ impl PaymentScheduleJobConfig {
 }
 
 pub struct PaymentScheduleJob {
-    schedule_service: Arc<PaymentScheduleService>,
+    schedule_service: Arc<payment_schedule::Service>,
     config: PaymentScheduleJobConfig,
 }
 
 impl PaymentScheduleJob {
     pub fn new(
-        schedule_service: Arc<PaymentScheduleService>,
+        schedule_service: Arc<payment_schedule::Service>,
         config: PaymentScheduleJobConfig,
     ) -> Self {
         Self {
@@ -42,15 +40,8 @@ impl PaymentScheduleJob {
             config,
         }
     }
-}
 
-#[async_trait]
-impl StartupTask for PaymentScheduleJob {
-    fn name(&self) -> &str {
-        "payment-schedules-job"
-    }
-
-    async fn run(&self) {
+    pub async fn run(self) {
         loop {
             let today = OffsetDateTime::now_utc().date();
             match self.schedule_service.process_due(today).await {

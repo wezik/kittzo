@@ -10,30 +10,26 @@ use std::sync::atomic::AtomicBool;
 use api::AppState;
 use app::email;
 use app::email_watch_job::EmailWatchJob;
-use app::event_bus::EventBus;
-use app::outbox::OutboxRelayJob;
+use app::outbox::{self, OutboxRelayJob};
 use app::payment;
-use app::payment_schedule::PaymentScheduleService;
+use app::payment_schedule;
 use app::payment_schedule_job::PaymentScheduleJob;
-use app::settings::{self, SettingsService};
-use app::startup_task::StartupTask;
-use infra::Config;
-use infra::config::OpenRouterConfig;
+use app::settings::{self, Setting};
+use infra::config::{Config, OpenRouterConfig};
 use infra::discord::{DiscordConsumer, DiscordReactionListener};
 use infra::email::OpenRouterParser;
-use infra::event_bus::TokioEventBus;
 use infra::imap::GmailMailbox;
 use infra::secrets::Keyring;
 use infra::tray::PendingAckWatch;
+use twilight_model::id::Id;
 
 fn main() {
-    infra::init();
+    infra::logging::init();
     tracing::info!("starting up");
-    infra::enter_home_dir();
+    infra::config::enter_home_dir();
 
     let config = Config::load();
     let server_port = config.server_port;
-    let paused = Arc::new(AtomicBool::new(false));
     let pending_ack = Arc::new(AtomicBool::new(false));
     let tray_pending_ack = pending_ack.clone();
 
@@ -45,22 +41,21 @@ fn main() {
             .block_on(serve(config, pending_ack));
     });
 
-    // the tray needs the OS event loop on the main thread, so the server runs on its own thread.
-    infra::tray::spawn(server_port, paused, tray_pending_ack);
+    infra::tray::spawn(server_port, tray_pending_ack);
 }
 
 async fn serve(config: Config, pending_ack: Arc<AtomicBool>) {
     let pool = infra::persistence::connect("sqlite:kittzo.db")
         .await
-        .expect("failed to connect to database"); // intentional panic, db is a necessary dependency
+        .expect("failed to connect to database");
 
-    let settings_service = Arc::new(SettingsService::new(
+    let settings_service = Arc::new(settings::Service::new(
         pool.clone(),
         Arc::new(Keyring),
         HashMap::from([
-            ("imap_host", config.email.imap_host.clone()),
-            ("imap_label", config.email.label.clone()),
-            ("openrouter_model", config.openrouter.model.clone()),
+            (Setting::ImapHost, config.email.imap_host.clone()),
+            (Setting::ImapLabel, config.email.label.clone()),
+            (Setting::OpenrouterModel, config.openrouter.model.clone()),
         ]),
         settings::env_overrides(),
     ));
@@ -70,74 +65,75 @@ async fn serve(config: Config, pending_ack: Arc<AtomicBool>) {
         .expect("failed to load settings");
 
     let payment_service = Arc::new(payment::Service::new(pool.clone()));
-    let schedule_service = Arc::new(PaymentScheduleService::new(pool.clone()));
+    let schedule_service = Arc::new(payment_schedule::Service::new(pool.clone()));
 
-    let mut tasks: Vec<Arc<dyn StartupTask>> = vec![
-        Arc::new(PaymentScheduleJob::new(
-            schedule_service.clone(),
-            config.payment_schedule(),
-        )),
-        Arc::new(PendingAckWatch::new(payment_service.clone(), pending_ack)),
-    ];
+    tokio::spawn(
+        PaymentScheduleJob::new(schedule_service.clone(), config.payment_schedule.clone()).run(),
+    );
+    tokio::spawn(PendingAckWatch::new(payment_service.clone(), pending_ack).run());
 
-    let bus: Arc<dyn EventBus> = Arc::new(TokioEventBus::new());
-    let missing = settings.missing(&settings::DISCORD);
+    let bus = outbox::event_bus();
+    let missing = settings.missing(&Setting::DISCORD);
+    let discord_channel = settings
+        .get(Setting::DiscordChannel)
+        .parse()
+        .ok()
+        .and_then(Id::new_checked);
     if !missing.is_empty() {
         tracing::warn!(
             ?missing,
             "discord disabled, payment events will stay in the outbox"
         );
-    } else {
+    } else if let Some(channel_id) = discord_channel {
         tracing::info!("discord enabled");
-        // subscribes before the relay job below can publish anything.
-        tasks.push(Arc::new(DiscordConsumer::new(
-            settings.get("discord_token"),
-            HashMap::from([("confirmations".to_string(), settings.get("discord_channel"))]),
-            pool.clone(),
-            bus.clone(),
-        )));
-        tasks.push(Arc::new(OutboxRelayJob::new(
-            pool.clone(),
-            bus.clone(),
-            config.outbox(),
-        )));
-        tasks.push(Arc::new(DiscordReactionListener::new(
-            settings.get("discord_token"),
-            pool.clone(),
-            payment_service.clone(),
-        )));
+        tokio::spawn(
+            DiscordConsumer::new(
+                settings.get(Setting::DiscordToken),
+                channel_id,
+                pool.clone(),
+                bus.clone(),
+            )
+            .run(),
+        );
+        tokio::spawn(OutboxRelayJob::new(pool.clone(), bus.clone(), config.outbox.clone()).run());
+        tokio::spawn(
+            DiscordReactionListener::new(
+                settings.get(Setting::DiscordToken),
+                pool.clone(),
+                payment_service.clone(),
+            )
+            .run(),
+        );
+    } else {
+        tracing::warn!("discord disabled, discord_channel is not a valid id");
     }
 
-    let missing = settings.missing(&settings::EMAIL);
-    if !missing.is_empty() {
-        tracing::warn!(?missing, "email watcher disabled");
-    } else {
+    let missing = settings.missing(&Setting::EMAIL);
+    if missing.is_empty() {
         tracing::info!("email watcher enabled");
         let parser = Arc::new(OpenRouterParser::new(OpenRouterConfig {
-            api_key: settings.get("openrouter_api_key"),
-            model: settings.get("openrouter_model"),
+            api_key: settings.get(Setting::OpenrouterApiKey),
+            model: settings.get(Setting::OpenrouterModel),
             ..config.openrouter.clone()
         }));
         let email_service = Arc::new(email::Service::new(parser, payment_service.clone()));
         let mailbox = Arc::new(GmailMailbox::new(
-            settings.get("imap_host"),
-            settings.get("imap_user"),
-            settings.get("imap_app_password"),
-            settings.get("imap_label"),
+            settings.get(Setting::ImapHost),
+            settings.get(Setting::ImapUser),
+            settings.get(Setting::ImapAppPassword),
+            settings.get(Setting::ImapLabel),
         ));
-        tasks.push(Arc::new(EmailWatchJob::new(
-            mailbox,
-            email_service,
-            pool.clone(),
-            config.email.watch(),
-        )));
-    }
-
-    for task in tasks {
-        tokio::spawn(async move {
-            tracing::info!(name = task.name(), "running startup task");
-            task.run().await;
-        });
+        tokio::spawn(
+            EmailWatchJob::new(
+                mailbox,
+                email_service,
+                pool.clone(),
+                config.email.watch.clone(),
+            )
+            .run(),
+        );
+    } else {
+        tracing::warn!(?missing, "email watcher disabled");
     }
 
     let state = AppState {

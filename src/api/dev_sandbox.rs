@@ -20,7 +20,7 @@ struct CreatePaymentRequest {
 }
 
 impl TryFrom<payments::PaymentSourceDto> for payment::Source {
-    type Error = String;
+    type Error = time::error::Parse;
 
     fn try_from(value: payments::PaymentSourceDto) -> Result<Self, Self::Error> {
         Ok(match value {
@@ -30,8 +30,7 @@ impl TryFrom<payments::PaymentSourceDto> for payment::Source {
                 occurrence_date,
             } => Self::Schedule {
                 schedule_id,
-                occurrence_date: Date::parse(&occurrence_date, &Iso8601::DATE)
-                    .map_err(|err| format!("invalid occurrence_date: {err}"))?,
+                occurrence_date: Date::parse(&occurrence_date, &Iso8601::DATE)?,
             },
             payments::PaymentSourceDto::Email { message_id } => Self::Email { message_id },
         })
@@ -48,7 +47,13 @@ async fn post_create_payment(
 ) -> impl IntoResponse {
     let source = match payment::Source::try_from(body.source) {
         Ok(source) => source,
-        Err(err) => return (StatusCode::BAD_REQUEST, err).into_response(),
+        Err(err) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                format!("invalid occurrence_date: {err}"),
+            )
+                .into_response();
+        }
     };
     match state
         .payment_service
@@ -64,6 +69,6 @@ async fn post_create_payment(
             Json(payments::PaymentResponse::from(payment)),
         )
             .into_response(),
-        Err(err) => payments::map_err_to_response(err),
+        Err(err) => payments::map_err_to_response(&err),
     }
 }

@@ -24,8 +24,8 @@ pub enum Error {
     #[error("payment updated concurrently")]
     ConcurrentUpdate,
 
-    #[error("unexpected persistence error")]
-    Persistence,
+    #[error(transparent)]
+    Persistence(persistence::Error),
 }
 
 impl From<persistence::Error> for Error {
@@ -34,7 +34,7 @@ impl From<persistence::Error> for Error {
             persistence::Error::AlreadyExists => Error::AlreadyExists,
             persistence::Error::NotFound => Error::NotFound,
             persistence::Error::ConcurrentUpdate => Error::ConcurrentUpdate,
-            persistence::Error::Unexpected => Error::Persistence,
+            err => Error::Persistence(err),
         }
     }
 }
@@ -48,7 +48,7 @@ impl Service {
         Self { pool }
     }
 
-    pub async fn list(&self, query: Option<ListQuery>) -> Result<Vec<Payment>, Error> {
+    pub async fn list(&self, query: ListQuery) -> Result<Vec<Payment>, Error> {
         Ok(sqlx_payment_repository::find_all(&self.pool, query).await?)
     }
 
@@ -82,7 +82,7 @@ impl Service {
 
         let mut tx = start_tx(&self.pool).await?;
 
-        let payment = sqlx_payment_repository::update(&mut *tx, &payment).await?;
+        let payment = sqlx_payment_repository::update(&mut tx, &payment).await?;
         sqlx_outbox_repository::create(&mut *tx, event).await?;
 
         commit_tx(tx).await?;
@@ -91,11 +91,11 @@ impl Service {
 
     pub async fn ack(&self, id: Uuid, accepted: bool) -> Result<Payment, Error> {
         let mut payment = sqlx_payment_repository::find(&self.pool, id).await?;
-        let event = payment.ack(accepted)?;
+        let event = payment.acknowledge(accepted)?;
 
         let mut tx = start_tx(&self.pool).await?;
 
-        let payment = sqlx_payment_repository::update(&mut *tx, &payment).await?;
+        let payment = sqlx_payment_repository::update(&mut tx, &payment).await?;
         sqlx_outbox_repository::create(&mut *tx, event).await?;
 
         commit_tx(tx).await?;

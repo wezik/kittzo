@@ -1,14 +1,12 @@
 use std::collections::HashSet;
 
 use async_trait::async_trait;
-use uuid::Uuid;
 
 mod parser;
 pub use parser::*;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Email {
-    pub id: Uuid,
     pub external_id: String,
     pub from: String,
     pub subject: String,

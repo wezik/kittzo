@@ -14,14 +14,13 @@ use tower_http::services::ServeDir;
 use tower_http::set_header::SetResponseHeaderLayer;
 
 use crate::app::payment;
-use crate::app::payment_schedule::PaymentScheduleService;
-use crate::app::settings::SettingsService;
+use crate::app::{self, payment_schedule};
 
 #[derive(Clone)]
 pub struct AppState {
     pub payment_service: Arc<payment::Service>,
-    pub schedule_service: Arc<PaymentScheduleService>,
-    pub settings: Arc<SettingsService>,
+    pub schedule_service: Arc<payment_schedule::Service>,
+    pub settings: Arc<app::settings::Service>,
 }
 
 pub async fn serve(addr: &str, state: AppState) -> std::io::Result<()> {
@@ -34,8 +33,6 @@ pub async fn serve(addr: &str, state: AppState) -> std::io::Result<()> {
     let router = router.merge(dev_sandbox::router());
     let router = router.with_state(state).fallback_service(
         ServiceBuilder::new()
-            // static assets change during development; always revalidate instead of
-            // letting the browser's heuristic cache serve a stale app.js/index.html.
             .layer(SetResponseHeaderLayer::overriding(
                 header::CACHE_CONTROL,
                 HeaderValue::from_static("no-cache"),

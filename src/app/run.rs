@@ -8,19 +8,13 @@ where
     Fut: Future<Output = Result<T, E>>,
     P: Fn(&E) -> bool,
 {
-    let mut last_error = None;
-
-    for _ in 0..attempts {
+    let mut attempt = 1;
+    loop {
         match operation().await {
-            Ok(value) => return Ok(value),
-            Err(err) if should_retry(&err) => {
-                last_error = Some(err);
-            }
-            Err(err) => return Err(err),
+            Err(err) if should_retry(&err) && attempt < attempts => attempt += 1,
+            result => return result,
         }
     }
-
-    Err(last_error.unwrap())
 }
 
 #[cfg(test)]

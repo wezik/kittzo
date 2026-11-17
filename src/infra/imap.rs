@@ -2,7 +2,6 @@ use std::collections::HashSet;
 
 use async_trait::async_trait;
 use mail_parser::MessageParser;
-use uuid::Uuid;
 
 use crate::domain::email::{Email, Mailbox, MailboxError, Pdf};
 
@@ -93,7 +92,6 @@ fn email_from_raw(message_id: String, raw: &[u8]) -> Email {
     let Some(message) = MessageParser::default().parse(raw) else {
         tracing::warn!(%message_id, "unparsable email");
         return Email {
-            id: Uuid::new_v4(),
             external_id: message_id,
             from: String::new(),
             subject: String::new(),
@@ -149,7 +147,6 @@ fn email_from_raw(message_id: String, raw: &[u8]) -> Email {
     tracing::debug!(%message_id, %text, "email body sent to the parser");
 
     Email {
-        id: Uuid::new_v4(),
         external_id: message_id,
         from,
         subject,
@@ -171,6 +168,11 @@ fn truncate(mut text: String, limit: usize) -> String {
 
 #[cfg(test)]
 pub(crate) mod tests {
+    use std::fmt::Write;
+
+    use base64::Engine;
+    use base64::engine::general_purpose::STANDARD as BASE64;
+
     use super::*;
 
     pub(crate) fn pdf_with_text(line: &str) -> Vec<u8> {
@@ -186,42 +188,20 @@ pub(crate) mod tests {
         let mut offsets = Vec::new();
         for (i, object) in objects.iter().enumerate() {
             offsets.push(pdf.len());
-            pdf.push_str(&format!("{} 0 obj\n{object}\nendobj\n", i + 1));
+            write!(pdf, "{} 0 obj\n{object}\nendobj\n", i + 1).unwrap();
         }
         let xref = pdf.len();
-        pdf.push_str(&format!(
-            "xref\n0 {}\n0000000000 65535 f \n",
-            objects.len() + 1
-        ));
+        write!(pdf, "xref\n0 {}\n0000000000 65535 f \n", objects.len() + 1).unwrap();
         for offset in offsets {
-            pdf.push_str(&format!("{offset:010} 00000 n \n"));
+            writeln!(pdf, "{offset:010} 00000 n ").unwrap();
         }
-        pdf.push_str(&format!(
+        write!(
+            pdf,
             "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n",
             objects.len() + 1
-        ));
+        )
+        .unwrap();
         pdf.into_bytes()
-    }
-
-    fn base64(bytes: &[u8]) -> String {
-        const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-        let mut out = String::new();
-        for chunk in bytes.chunks(3) {
-            let b = [
-                chunk[0],
-                *chunk.get(1).unwrap_or(&0),
-                *chunk.get(2).unwrap_or(&0),
-            ];
-            let n = (b[0] as u32) << 16 | (b[1] as u32) << 8 | b[2] as u32;
-            for i in 0..4 {
-                if i <= chunk.len() {
-                    out.push(ALPHABET[(n >> (18 - 6 * i) & 63) as usize] as char);
-                } else {
-                    out.push('=');
-                }
-            }
-        }
-        out
     }
 
     fn mime(attachments: &[(&str, &str, Vec<u8>)]) -> Vec<u8> {
@@ -236,12 +216,14 @@ pub(crate) mod tests {
              Do zapłaty 307,50 zł.\r\n",
         );
         for (name, content_type, bytes) in attachments {
-            raw.push_str(&format!(
+            write!(
+                raw,
                 "--b\r\nContent-Type: {content_type}; name=\"{name}\"\r\n\
                  Content-Disposition: attachment; filename=\"{name}\"\r\n\
                  Content-Transfer-Encoding: base64\r\n\r\n{}\r\n",
-                base64(bytes)
-            ));
+                BASE64.encode(bytes)
+            )
+            .unwrap();
         }
         raw.push_str("--b--\r\n");
         raw.into_bytes()

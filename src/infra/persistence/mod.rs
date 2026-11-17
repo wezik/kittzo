@@ -2,7 +2,8 @@ use std::str::FromStr;
 use std::time::Duration;
 
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
-use sqlx::{Row, SqlitePool, sqlite::SqliteRow};
+use sqlx::{Row, SqliteConnection, SqlitePool, sqlite::SqliteRow};
+use uuid::Uuid;
 
 use serde_json::{Value, json};
 
@@ -15,7 +16,7 @@ pub mod sqlx_payment_schedule_repository;
 pub mod sqlx_processed_email_repository;
 pub mod sqlx_settings_repository;
 
-#[derive(Debug, PartialEq, thiserror::Error)]
+#[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error("already exists")]
     AlreadyExists,
@@ -26,16 +27,29 @@ pub enum Error {
     #[error("updated concurrently")]
     ConcurrentUpdate,
 
-    #[error("unexpected persistence error")]
-    Unexpected,
+    #[error("corrupt row: {0}")]
+    Corrupt(String),
+
+    #[error(transparent)]
+    Unexpected(#[from] sqlx::Error),
 }
 
-pub(crate) fn unexpected(sqlx_err: sqlx::Error) -> Error {
-    tracing::error!(%sqlx_err, "unexpected sqlx error");
-    Error::Unexpected
+pub(crate) async fn update_conflict(
+    conn: &mut SqliteConnection,
+    exists_sql: &'static str,
+    id: Uuid,
+) -> Error {
+    match sqlx::query(exists_sql)
+        .bind(id.to_string())
+        .fetch_optional(conn)
+        .await
+    {
+        Ok(Some(_)) => Error::ConcurrentUpdate,
+        Ok(None) => Error::NotFound,
+        Err(err) => err.into(),
+    }
 }
 
-// one connection avoids `SQLITE_BUSY` contention between writers.
 pub async fn connect(url: &str) -> sqlx::Result<SqlitePool> {
     let options = SqliteConnectOptions::from_str(url)?
         .create_if_missing(true)
@@ -52,8 +66,6 @@ pub async fn connect(url: &str) -> sqlx::Result<SqlitePool> {
     Ok(pool)
 }
 
-/// `None` for a row written before `Money` validated precision: the row is skipped and
-/// logged rather than crashing a request or a job loop over historical data.
 pub(crate) fn total_from_row(row: &SqliteRow) -> Option<Money> {
     let amount: String = row.get("total_amount");
     let currency: String = row.get("total_currency");
@@ -77,27 +89,28 @@ pub(crate) fn details_columns(details: &Details) -> (&'static str, String) {
     (kind, details.to_string())
 }
 
-pub(crate) fn details_from_columns(kind: &str, details: &str) -> Result<Details, String> {
-    let details: Value = serde_json::from_str(details).map_err(|err| err.to_string())?;
+pub(crate) fn details_from_columns(kind: &str, details: &str) -> Result<Details, Error> {
+    let corrupt = |what: String| Error::Corrupt(format!("{kind} details: {what}"));
+    let details: Value = serde_json::from_str(details).map_err(|err| corrupt(err.to_string()))?;
     let field = |name: &str| {
         details[name]
             .as_str()
             .map(str::to_string)
-            .ok_or_else(|| format!("{kind} details missing {name}"))
+            .ok_or_else(|| corrupt(format!("missing {name}")))
     };
     match kind {
         "standard" => {
-            let account_number =
-                AccountNumber::from(field("account_number")?).map_err(|err| err.to_string())?;
+            let account_number = AccountNumber::try_from(field("account_number")?)
+                .map_err(|err| corrupt(err.to_string()))?;
             Details::standard(field("title")?, account_number, field("recipient")?)
-                .map_err(|err| err.to_string())
+                .map_err(|err| corrupt(err.to_string()))
         }
         "tax" => match field("form_symbol")?.as_str() {
             "VAT-7" => Ok(Details::tax(TaxForm::Vat7)),
             "PPL" => Ok(Details::tax(TaxForm::Ppl)),
-            other => Err(format!("unknown tax form {other}")),
+            other => Err(corrupt(format!("unknown tax form {other}"))),
         },
-        other => Err(format!("unknown payment type {other}")),
+        other => Err(corrupt(format!("unknown type {other}"))),
     }
 }
 

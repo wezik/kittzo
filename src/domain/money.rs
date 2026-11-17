@@ -5,31 +5,37 @@ use rust_decimal::prelude::ToPrimitive;
 use rusty_money::Money as RustyMoney;
 use rusty_money::iso::Currency;
 
-/// Domain type, deliberately serde-free - wire (de)serialization lives in
-/// `api::serializers::money::MoneyDto`.
+#[derive(Debug, thiserror::Error, PartialEq)]
+pub enum Error {
+    #[error("unknown currency code: {0}")]
+    UnknownCurrency(String),
+
+    #[error("invalid amount: {0}")]
+    InvalidAmount(#[from] rust_decimal::Error),
+
+    #[error("{amount} has more decimal places than {currency} allows")]
+    TooPrecise { amount: Decimal, currency: String },
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Money(RustyMoney<'static, Currency>);
 
 impl Money {
-    /// Rejects an amount with more decimal places than the currency has minor units, rather
-    /// than rounding it: a silently rounded total is worse than a refused one here.
-    pub fn from_parts(currency_code: &str, amount: &str) -> Result<Self, String> {
-        let currency = rusty_money::iso::find(currency_code)
-            .ok_or_else(|| format!("unknown currency code: {currency_code}"))?;
-        let mut amount = Decimal::from_str(amount).map_err(|e| e.to_string())?;
+    pub fn from_parts(currency_code: &str, amount: &str) -> Result<Self, Error> {
+        let currency = find_currency(currency_code)?;
+        let mut amount = Decimal::from_str(amount)?;
         if amount.normalize().scale() > currency.exponent {
-            return Err(format!(
-                "{amount} has more decimal places than {currency_code} allows ({})",
-                currency.exponent
-            ));
+            return Err(Error::TooPrecise {
+                amount,
+                currency: currency_code.to_string(),
+            });
         }
         amount.rescale(currency.exponent);
         Ok(Money(RustyMoney::from_decimal(amount, currency)))
     }
 
-    pub fn from_minor(currency_code: &str, minor_amount: u32) -> Result<Self, String> {
-        let currency = rusty_money::iso::find(currency_code)
-            .ok_or_else(|| format!("unknown currency code: {currency_code}"))?;
+    pub fn from_minor(currency_code: &str, minor_amount: u32) -> Result<Self, Error> {
+        let currency = find_currency(currency_code)?;
         let scale = Decimal::from(10u64.pow(currency.exponent));
         let mut amount = Decimal::from(minor_amount) / scale;
         amount.rescale(currency.exponent);
@@ -51,6 +57,10 @@ impl Money {
     pub fn currency_code(&self) -> &'static str {
         self.0.currency().iso_alpha_code
     }
+}
+
+fn find_currency(code: &str) -> Result<&'static Currency, Error> {
+    rusty_money::iso::find(code).ok_or_else(|| Error::UnknownCurrency(code.to_string()))
 }
 
 impl std::fmt::Display for Money {

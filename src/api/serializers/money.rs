@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::domain::money::Money;
+use crate::domain::money::{self, Money};
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(try_from = "MoneyRepr", into = "MoneyRepr")]
@@ -13,7 +13,7 @@ struct MoneyRepr {
 }
 
 impl TryFrom<MoneyRepr> for MoneyDto {
-    type Error = String;
+    type Error = money::Error;
 
     fn try_from(repr: MoneyRepr) -> Result<Self, Self::Error> {
         Money::from_minor(&repr.currency, repr.minor_amount).map(MoneyDto)
