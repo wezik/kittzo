@@ -127,7 +127,8 @@ pub(super) fn map_err_to_response(err: &app::payment::Error) -> Response {
             | payment::Error::InvalidTaxForm
             | payment::Error::InvalidAccountNumber
             | payment::Error::InvalidRecipient
-            | payment::Error::UnsupportedDetails,
+            | payment::Error::UnsupportedDetails
+            | payment::Error::InvalidDayOfMonth,
         ) => (StatusCode::UNPROCESSABLE_ENTITY, err.to_string()).into_response(),
         Error::Domain(payment::Error::InvalidTransition { .. }) | Error::ConcurrentUpdate => {
             (StatusCode::CONFLICT, err.to_string()).into_response()

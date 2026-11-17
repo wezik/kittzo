@@ -178,7 +178,7 @@ fn row_to_schedule(row: &SqliteRow) -> Option<PaymentSchedule> {
         recurrence_type.as_str(),
         u8::try_from(row.get::<i64, _>("day_of_month")),
     ) {
-        ("monthly", Ok(day_of_month)) => Recurrence::Monthly { day_of_month },
+        ("monthly", Ok(day_of_month @ 1..=31)) => Recurrence::Monthly { day_of_month },
         _ => {
             skip("invalid recurrence");
             return None;

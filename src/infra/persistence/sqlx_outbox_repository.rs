@@ -1,4 +1,4 @@
-use sqlx::{Row, Sqlite, SqlitePool, sqlite::SqliteRow};
+use sqlx::{Row, Sqlite, SqlitePool};
 use time::{OffsetDateTime, SignedDuration};
 use uuid::Uuid;
 
@@ -34,9 +34,11 @@ pub async fn claim_batch(
     limit: i64,
 ) -> Result<Vec<OutboxMessage>, Error> {
     let now = OffsetDateTime::now_utc();
-    let retry_cutoff = now - retry_after;
+    let retry_cutoff = now
+        .checked_sub(retry_after)
+        .unwrap_or(OffsetDateTime::UNIX_EPOCH);
 
-    sqlx::query(
+    let rows = sqlx::query(
         "UPDATE outbox
          SET claimed_at = ?
          WHERE id IN (
@@ -51,9 +53,29 @@ pub async fn claim_batch(
     .bind(retry_cutoff)
     .bind(limit)
     .fetch_all(pool)
-    .await
-    .map_err(Error::from)
-    .map(|rows| rows.iter().filter_map(row_to_message).collect())
+    .await?;
+
+    let mut messages = Vec::with_capacity(rows.len());
+    for row in &rows {
+        let raw_id: String = row.get("id");
+        match Uuid::parse_str(&raw_id) {
+            Ok(id) => messages.push(OutboxMessage {
+                id,
+                event_type: row.get("event_type"),
+                aggregate_id: row.get("aggregate_id"),
+                payload: row.get("payload"),
+            }),
+            Err(err) => {
+                tracing::error!(%err, id = raw_id, "dropping outbox row with invalid id");
+                sqlx::query("UPDATE outbox SET processed_at = ? WHERE id = ?")
+                    .bind(now)
+                    .bind(&raw_id)
+                    .execute(pool)
+                    .await?;
+            }
+        }
+    }
+    Ok(messages)
 }
 
 pub async fn mark_processed(pool: &SqlitePool, id: Uuid) -> Result<(), Error> {
@@ -67,19 +89,6 @@ pub async fn mark_processed(pool: &SqlitePool, id: Uuid) -> Result<(), Error> {
         tracing::error!(%id, "outbox message to mark processed not found, it will be redelivered");
     }
     Ok(())
-}
-
-fn row_to_message(row: &SqliteRow) -> Option<OutboxMessage> {
-    let id: String = row.get("id");
-    let id = Uuid::parse_str(&id)
-        .inspect_err(|err| tracing::error!(%err, id, "skipping outbox row with invalid id"))
-        .ok()?;
-    Some(OutboxMessage {
-        id,
-        event_type: row.get("event_type"),
-        aggregate_id: row.get("aggregate_id"),
-        payload: row.get("payload"),
-    })
 }
 
 #[cfg(test)]
@@ -159,6 +168,44 @@ mod tests {
 
         assert_eq!(reclaimed.len(), 1);
         assert_eq!(reclaimed[0].id, first[0].id);
+    }
+
+    #[tokio::test]
+    async fn a_row_with_invalid_id_is_dropped() {
+        let pool = pool().await;
+        sqlx::query(
+            "INSERT INTO outbox (id, event_type, aggregate_id, payload, created_at)
+             VALUES ('bad', 'x', 'x', x'', ?)",
+        )
+        .bind(OffsetDateTime::now_utc())
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let first = claim_batch(&pool, SignedDuration::seconds(0), 10)
+            .await
+            .unwrap();
+        let second = claim_batch(&pool, SignedDuration::seconds(0), 10)
+            .await
+            .unwrap();
+        let processed: bool =
+            sqlx::query_scalar("SELECT processed_at IS NOT NULL FROM outbox WHERE id = 'bad'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+
+        assert!(first.is_empty());
+        assert!(second.is_empty());
+        assert!(processed);
+    }
+
+    #[tokio::test]
+    async fn claim_batch_does_not_overflow_on_huge_retry_after() {
+        let pool = pool().await;
+
+        let claimed = claim_batch(&pool, SignedDuration::MAX, 10).await.unwrap();
+
+        assert!(claimed.is_empty());
     }
 
     #[tokio::test]

@@ -42,6 +42,14 @@ impl PaymentSchedule {
         recurrence: Recurrence,
         starts_at: Date,
     ) -> Result<Self, Error> {
+        if !matches!(
+            recurrence,
+            Recurrence::Monthly {
+                day_of_month: 1..=31
+            }
+        ) {
+            return Err(Error::InvalidDayOfMonth);
+        }
         let now = OffsetDateTime::now_utc();
         let next_due_at = recurrence.next_occurrence(starts_at.previous_day().unwrap_or(starts_at));
         let next_title = next_title_from_template(&title_template, next_due_at);
@@ -146,6 +154,22 @@ mod tests {
         let result = next_title_from_template(template, cursor);
 
         assert_eq!(result, "foo 02 bar 2025");
+    }
+
+    #[test]
+    fn new_rejects_day_of_month_out_of_range() {
+        for day_of_month in [0, 32] {
+            let result = PaymentSchedule::new(
+                some_money(),
+                "Foo".to_string(),
+                AccountNumber::try_from("61109010140000071219812874".to_string()).unwrap(),
+                "someone".to_string(),
+                Recurrence::Monthly { day_of_month },
+                date(2026, 8, 10),
+            );
+
+            assert!(matches!(result, Err(Error::InvalidDayOfMonth)));
+        }
     }
 
     #[test]

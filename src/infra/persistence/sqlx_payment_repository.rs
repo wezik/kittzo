@@ -145,7 +145,7 @@ where
         ListQueryAckFilter::Pending => "pending",
         ListQueryAckFilter::Accepted => "accepted",
     });
-    sqlx::query_as::<_, PaymentRow>(
+    Ok(sqlx::query_as::<_, PaymentRow>(
         "SELECT * FROM payments
          WHERE (?1 IS NULL OR status = ?1) AND (?2 IS NULL OR ack = ?2)
          ORDER BY created_at",
@@ -155,8 +155,12 @@ where
     .fetch_all(executor)
     .await?
     .into_iter()
-    .map(row_to_payment)
-    .collect()
+    .filter_map(|row| {
+        row_to_payment(row)
+            .inspect_err(|err| tracing::error!(%err, "skipping unusable payment row"))
+            .ok()
+    })
+    .collect())
 }
 
 pub async fn find<'e, E>(executor: E, id: Uuid) -> Result<Payment, Error>

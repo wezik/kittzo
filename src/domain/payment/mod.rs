@@ -168,6 +168,9 @@ pub enum Error {
     #[error("only standard details are supported here")]
     UnsupportedDetails,
 
+    #[error("day of month must be 1..=31")]
+    InvalidDayOfMonth,
+
     #[error("payment can't go from {from:?} to {to:?}")]
     InvalidTransition { from: String, to: String },
 }
